@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum PapelUsuario {
+  SOLICITANTE
+  ATENDENTE
+  ADMIN
+}
+
+enum StatusChamado {
+  ABERTO
+  EM_ANDAMENTO
+  AGUARDANDO
+  RESOLVIDO
+  FECHADO
+}
+
+enum PrioridadeChamado {
+  BAIXA
+  MEDIA
+  ALTA
+  URGENTE
+}
+
+/// Pessoa que abre ou atende chamados.
+model Usuario {
+  id           Int          @id @default(autoincrement())
+  nome         String
+  email        String       @unique
+  senha        String
+  papel        PapelUsuario @default(SOLICITANTE)
+  ativo        Boolean      @default(true)
+  criadoEm     DateTime     @default(now()) @map("criado_em")
+  atualizadoEm DateTime     @updatedAt @map("atualizado_em")
+
+  chamadosAbertos    Chamado[] @relation("ChamadosDoSolicitante")
+  chamadosAtribuidos Chamado[] @relation("ChamadosDoAtendente")
+
+  @@map("Usuario")
+}
+
+/// Classificação do chamado (ex.: Hardware, Software, Rede).
+model Categoria {
+  id        Int      @id @default(autoincrement())
+  nome      String   @unique
+  descricao String?
+  ativa     Boolean  @default(true)
+  criadoEm  DateTime @default(now()) @map("criado_em")
+
+  chamados Chamado[]
+
+  @@map("Categoria")
+}
+
+/// Ticket de suporte. Um solicitante, uma categoria e, opcionalmente, um atendente.
+model Chamado {
+  id           Int               @id @default(autoincrement())
+  titulo       String
+  descricao    String
+  status       StatusChamado     @default(ABERTO)
+  prioridade   PrioridadeChamado @default(MEDIA)
+  criadoEm     DateTime          @default(now()) @map("criado_em")
+  atualizadoEm DateTime          @updatedAt @map("atualizado_em")
+
+  categoriaId Int       @map("categoria_id")
+  categoria   Categoria @relation(fields: [categoriaId], references: [id])
+
+  solicitanteId Int     @map("solicitante_id")
+  solicitante   Usuario @relation("ChamadosDoSolicitante", fields: [solicitanteId], references: [id])
+
+  atendenteId Int?     @map("atendente_id")
+  atendente   Usuario? @relation("ChamadosDoAtendente", fields: [atendenteId], references: [id])
+
+  @@index([status])
+  @@index([categoriaId])
+  @@index([solicitanteId])
+  @@index([atendenteId])
+  @@map("Chamado")
+}
