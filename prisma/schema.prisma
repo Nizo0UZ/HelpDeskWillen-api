@@ -1,10 +1,11 @@
+
 generator client {
-  provider        = "prisma-client-js"
+  provider        = "prisma-client"
+  output          = "../generated/prisma"
+  moduleFormat    = "cjs"
   previewFeatures = ["postgresqlExtensions"]
 }
 
-/// A URL de conexão fica em prisma.config.ts (Prisma 7).
-/// `extensions` impede que o migrate tente remover a extensão pgvector.
 datasource db {
   provider   = "postgresql"
   extensions = [vector]
@@ -42,13 +43,19 @@ model Usuario {
   criadoEm     DateTime     @default(now()) @map("criado_em")
   atualizadoEm DateTime     @updatedAt @map("atualizado_em")
 
-  chamadosAbertos    Chamado[] @relation("ChamadosDoSolicitante")
-  chamadosAtribuidos Chamado[] @relation("ChamadosDoAtendente")
+  chamadosAbertos    Chamado[]    @relation("ChamadosDoSolicitante")
+  chamadosAtribuidos Chamado[]    @relation("ChamadosDoAtendente")
+  /// 1:N — um usuário escreve muitos comentários.
+  comentarios        Comentario[]
+  /// 1:N — um usuário é autor de muitos artigos da base de conhecimento.
+  artigos            Artigo[]
 
   @@map("Usuario")
 }
 
-/// Classificação do chamado (ex.: Hardware, Software, Rede).
+/// Classificação compartilhada por chamados e artigos (ex.: Hardware, Software, Rede).
+/// Usar a mesma entidade nos dois lados permite sugerir artigos da mesma
+/// categoria do chamado sem manter duas taxonomias paralelas.
 model Categoria {
   id        Int      @id @default(autoincrement())
   nome      String   @unique
@@ -57,6 +64,8 @@ model Categoria {
   criadoEm  DateTime @default(now()) @map("criado_em")
 
   chamados Chamado[]
+  /// 1:N — uma categoria agrupa muitos artigos.
+  artigos  Artigo[]
 
   @@map("Categoria")
 }
@@ -68,20 +77,34 @@ model Chamado {
   descricao    String
   status       StatusChamado     @default(ABERTO)
   prioridade   PrioridadeChamado @default(MEDIA)
+  /// Descrição da solução aplicada. Opcional: só é preenchida ao resolver.
+  solucao      String?           @db.Text
+  /// Momento em que o chamado foi resolvido. Opcional pelo mesmo motivo.
+  resolvidoEm  DateTime?         @map("resolvido_em")
   criadoEm     DateTime          @default(now()) @map("criado_em")
   atualizadoEm DateTime          @updatedAt @map("atualizado_em")
 
+  /// N:1 obrigatória. Restrict: não se apaga uma categoria com chamados
+  /// (desative com `ativa = false`). Mesmo comportamento que já existia no banco.
   categoriaId Int       @map("categoria_id")
-  categoria   Categoria @relation(fields: [categoriaId], references: [id])
+  categoria   Categoria @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
 
+  /// N:1 obrigatória. Restrict: apagar o solicitante deixaria o histórico sem
+  /// dono; o caminho correto é desativar o usuário. Já era o comportamento no banco.
   solicitanteId Int     @map("solicitante_id")
-  solicitante   Usuario @relation("ChamadosDoSolicitante", fields: [solicitanteId], references: [id])
+  solicitante   Usuario @relation("ChamadosDoSolicitante", fields: [solicitanteId], references: [id], onDelete: Restrict)
 
+  /// N:1 opcional. SetNull: se o atendente for removido, o chamado volta a
+  /// ficar sem atendente em vez de sumir. Já era o comportamento no banco.
   atendenteId Int?     @map("atendente_id")
-  atendente   Usuario? @relation("ChamadosDoAtendente", fields: [atendenteId], references: [id])
+  atendente   Usuario? @relation("ChamadosDoAtendente", fields: [atendenteId], references: [id], onDelete: SetNull)
 
   /// Lado inverso da relação (exigido pelo Prisma; não gera coluna no banco).
-  documentos Documentos[]
+  documentos  Documentos[]
+  /// 1:N — histórico de atendimento (apagado junto com o chamado, ver Comentario).
+  comentarios Comentario[]
+  /// N:N com Tag via tabela de junção explícita ChamadoTag.
+  tags        ChamadoTag[]
 
   @@index([status])
   @@index([categoriaId])
@@ -90,15 +113,86 @@ model Chamado {
   @@map("Chamado")
 }
 
+/// Entrada do histórico de atendimento de um chamado.
+/// Cardinalidade: cada comentário pertence a exatamente 1 chamado e 1 autor;
+/// chamados e usuários têm 0..N comentários.
+model Comentario {
+  id       Int      @id @default(autoincrement())
+  conteudo String   @db.Text
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  /// Cascade: o comentário só faz sentido dentro do chamado. Se o chamado for
+  /// apagado (operação excepcional), seu histórico vai junto.
+  chamadoId Int     @map("chamado_id")
+  chamado   Chamado @relation(fields: [chamadoId], references: [id], onDelete: Cascade)
+
+  /// Restrict: apagar um usuário que comentou exigiria perder ou anonimizar o
+  /// histórico de atendimento. O banco bloqueia o DELETE; a decisão consciente
+  /// é desativar o usuário (`ativo = false`) ou tratar os comentários antes.
+  autorId Int     @map("autor_id")
+  autor   Usuario @relation(fields: [autorId], references: [id], onDelete: Restrict)
+
+  /// Índice composto atende "comentários do chamado X em ordem cronológica".
+  @@index([chamadoId, criadoEm])
+  @@index([autorId])
+  @@map("Comentario")
+}
+
+/// Rótulo livre para classificar chamados (ex.: "vpn", "impressora", "senha").
+model Tag {
+  id       Int      @id @default(autoincrement())
+  nome     String   @unique
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  chamados ChamadoTag[]
+
+  @@map("Tag")
+}
+
+/// Tabela de junção explícita da relação N:N Chamado <-> Tag.
+/// Explícita (em vez de implícita `_ChamadoToTag`) para ter nome de tabela/colunas
+/// controlado e permitir metadados da associação (`atribuidaEm`).
+/// A PK composta impede a mesma tag duas vezes no mesmo chamado.
+model ChamadoTag {
+  /// Cascade: a linha representa apenas o vínculo; sem o chamado ela não existe.
+  chamadoId Int     @map("chamado_id")
+  chamado   Chamado @relation(fields: [chamadoId], references: [id], onDelete: Cascade)
+
+  /// Cascade: apagar uma tag apenas a remove dos chamados; os chamados permanecem.
+  tagId Int @map("tag_id")
+  tag   Tag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  atribuidaEm DateTime @default(now()) @map("atribuida_em")
+
+  /// A PK (chamado_id, tag_id) já indexa buscas por chamado;
+  /// o índice em tag_id atende "chamados com a tag X".
+  @@id([chamadoId, tagId])
+  @@index([tagId])
+  @@map("ChamadoTag")
+}
+
+/// Artigo da base de conhecimento.
+/// Não há FK entre Artigo e Chamado: apagar um chamado nunca afeta artigos.
 model Artigo {
   id           Int      @id @default(autoincrement())
   titulo       String
-  conteudo     String
+  conteudo     String   @db.Text
   criadoEm     DateTime @default(now()) @map("criado_em")
   atualizadoEm DateTime @updatedAt @map("atualizado_em")
 
+  /// N:1 obrigatória. Restrict: o autor de conteúdo publicado não é apagado
+  /// silenciosamente; desative o usuário ou reatribua os artigos antes.
+  autorId Int     @map("autor_id")
+  autor   Usuario @relation(fields: [autorId], references: [id], onDelete: Restrict)
+
+  /// N:1 obrigatória. Restrict: mesma regra de Chamado.categoria.
+  categoriaId Int       @map("categoria_id")
+  categoria   Categoria @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+
   documentos Documentos[]
 
+  @@index([autorId])
+  @@index([categoriaId])
   @@map("Artigo")
 }
 
@@ -109,9 +203,11 @@ model Documentos {
   embedding Unsupported("vector(1536)")
   criadoEm  DateTime                    @default(now()) @map("criado_em") @db.Timestamptz(6)
 
+  /// SetNull: o embedding continua útil para busca mesmo sem o chamado de origem.
   chamadoId Int?     @map("chamado_id")
   chamado   Chamado? @relation(fields: [chamadoId], references: [id], onDelete: SetNull)
 
+  /// SetNull: idem para artigos.
   artigoId Int?    @map("artigo_id")
   artigo   Artigo? @relation(fields: [artigoId], references: [id], onDelete: SetNull)
 
