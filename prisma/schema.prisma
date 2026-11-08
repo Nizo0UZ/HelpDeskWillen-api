@@ -1,9 +1,13 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
+/// A URL de conexão fica em prisma.config.ts (Prisma 7).
+/// `extensions` impede que o migrate tente remover a extensão pgvector.
 datasource db {
-  provider = "postgresql"
+  provider   = "postgresql"
+  extensions = [vector]
 }
 
 enum PapelUsuario {
@@ -76,9 +80,42 @@ model Chamado {
   atendenteId Int?     @map("atendente_id")
   atendente   Usuario? @relation("ChamadosDoAtendente", fields: [atendenteId], references: [id])
 
+  /// Lado inverso da relação (exigido pelo Prisma; não gera coluna no banco).
+  documentos Documentos[]
+
   @@index([status])
   @@index([categoriaId])
   @@index([solicitanteId])
   @@index([atendenteId])
   @@map("Chamado")
+}
+
+model Artigo {
+  id           Int      @id @default(autoincrement())
+  titulo       String
+  conteudo     String
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  documentos Documentos[]
+
+  @@map("Artigo")
+}
+
+model Documentos {
+  id        Int                         @id @default(autoincrement())
+  conteudo  String
+  metadata  Json                        @default("{}")
+  embedding Unsupported("vector(1536)")
+  criadoEm  DateTime                    @default(now()) @map("criado_em") @db.Timestamptz(6)
+
+  chamadoId Int?     @map("chamado_id")
+  chamado   Chamado? @relation(fields: [chamadoId], references: [id], onDelete: SetNull)
+
+  artigoId Int?    @map("artigo_id")
+  artigo   Artigo? @relation(fields: [artigoId], references: [id], onDelete: SetNull)
+
+  @@index([chamadoId])
+  @@index([artigoId])
+  @@map("Documentos")
 }
