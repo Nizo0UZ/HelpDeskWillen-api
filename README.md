@@ -632,4 +632,4 @@ Foram executadas **50 consultas por modalidade** (5 cenários reais de suporte �
 ## 6. Arquivos de Apoio (`requests.http` e `IA_LOG.md`)
 
 - **[`requests.http`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/requests.http):** roteiro completo de requisições HTTP (compatível com a extensão *REST Client* do VS Code) cobrindo todas as rotas, fluxos transacionais, casos de erro de validação/regra de negócio (`400`/`409`), buscas semânticas, full-text, comparativo e perguntas RAG.
-- **[`IA_LOG.md`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/IA_LOG.md):** registro detalhado das interações com IA contendo data, autor, prompt utilizado, resposta gerada e todas as adaptações manuais aplicadas pela equipe.
+- **[`IA_LOG.md`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/IA_LOG.md):** registro detalhado das interações com IA contendo data, autor, prompt utilizado, resposta gerada e todas as adaptações manuais aplicadas no desenvolvimento.

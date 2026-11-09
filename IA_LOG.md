@@ -1,6 +1,6 @@
 # IA_LOG — Auditoria e Registro de Uso de Inteligência Artificial
 
-Este arquivo atende ao requisito de **Auditoria (`IA_LOG.md`)** do projeto **Smart-Base Helpdesk**, documentando na íntegra os **prompts utilizados** durante cada fase do desenvolvimento, **o que a IA respondeu/gerou** e **todas as adaptações e intervenções manuais feitas pela dupla** (validando o fluxo de ponta a ponta desde `docker-compose up -d`, `npx prisma migrate dev` e `node src/seed.js`).
+Este arquivo atende ao requisito de **Auditoria (`IA_LOG.md`)** do projeto **Smart-Base Helpdesk**, documentando na íntegra os **prompts utilizados** durante cada fase do desenvolvimento, **o que a IA respondeu/gerou** e **todas as adaptações e intervenções manuais realizadas pelo autor** (validando o fluxo de ponta a ponta desde `docker-compose up -d`, `npx prisma migrate dev` e `node src/seed.js`).
 
 ---
 
@@ -22,29 +22,29 @@ Este arquivo atende ao requisito de **Auditoria (`IA_LOG.md`)** do projeto **Sma
 
 ## 1. Tabela Resumo de Auditoria (Fases, Prompts, Respostas e Adaptações)
 
-| # | Data | Autor | Fase / Escopo | Resumo do Prompt | O que a IA Respondeu | O que Foi Adaptado Manualmente pela Dupla |
+| # | Data | Autor | Fase / Escopo | Resumo do Prompt | O que a IA Respondeu | O que Foi Adaptado Manualmente |
 |---|---|---|---|---|---|---|
-| **1** | `2026-11-05` | `Nizo0UZ` (Lucas) & Dupla | **Fase 0 — Docker, `pgvector` e Embeddings** | Configurar `docker-compose.yml` (`pgvector:pg16`, pgAdmin, Elasticsearch), migration da tabela `Documentos` com índice HNSW e script de embeddings Gemini. | Sugeriu `@google/generative-ai` com modelo `text-embedding-004` (768 dims) e SQL inicial da tabela `Documentos`. | 1. **Troca de `text-embedding-004` por `gemini-embedding-001` (`1536` dimensões)** na nova SDK `@google/genai` com `outputDimensionality: 1536` e `taskType` (`RETRIEVAL_DOCUMENT` / `RETRIEVAL_QUERY`).<br>2. **Ajuste manual do SQL da migration (`20261106004222_add_pgvector_documentos`)**: coluna `VECTOR(1536)` e criação do índice `documentos_embedding_hnsw_idx` (`USING hnsw (embedding vector_cosine_ops)`). |
-| **2** | `2026-11-08` | `Nizo0UZ` (Lucas) & Dupla | **Fase 1.1 — Ajustar Modelagem Prisma (`Documentos` + FK)** | Trazer `Documentos` para o `schema.prisma` com `Unsupported("vector(1536)")`, FKs opcionais `chamadoId`/`artigoId` e declarar extensão `vector` no `datasource`. | Entregou o bloco `datasource` com `extensions = [vector]`, o modelo `Documentos` com FKs `SetNull` e a migration `20261108213939_documentos_fk_chamado_artigo`. | **Identificação de *drift* no índice HNSW:** o Prisma gerou `DROP INDEX "documentos_embedding_hnsw_idx";` na migration `20261108213939` por não suportar `type: Hnsw` em colunas `Unsupported`. Isso motivou a intervenção manual na migration seguinte sem violar o histórico versionado. |
-| **3** | `2026-11-08` | `Nizo0UZ` (Lucas) & Dupla | **Fase 1.2 — Enriquecer Modelagem Prisma e Prisma 7** | Adicionar `Comentario` (1:N), `Tag`/`ChamadoTag` (N:N explícita), `Artigo` (1:N com `Usuario` e `Categoria`), `solucao`/`resolvidoEm` em `Chamado`, `onDelete` explícito, preservar HNSW e migrar para o padrão Prisma 7. | Gerou o schema completo com 8 tabelas, justificativas de `onDelete`, configuração `prisma-client` + `@prisma/adapter-pg` e script `scripts/teste-prisma.ts`. | 1. **Edição manual da migration (`--create-only`):** adicionamos manualmente `CREATE INDEX IF NOT EXISTS documentos_embedding_hnsw_idx ...` ao final de `20261108214949_comentarios_tags_artigo_autor_categoria_solucao/migration.sql` e aplicamos com `migrate deploy`.<br>2. **Configuração de `moduleFormat = "cjs"`** no gerador do Prisma 7 para compatibilidade entre TypeScript (`tsx`) e scripts `.js`. |
-| **4** | `2026-11-08` | `Nizo0UZ` (Lucas) & Dupla | **Fase 2 — Estrutura `src/` e Migração para TypeScript** | Reorganizar `backend/` em `src/{config,services,routes,middlewares}`, migrar `embeddings.js` para `embeddingService.ts`, criar singleton `prisma.ts` e converter tudo para TypeScript estrito. | Criou toda a árvore `src/`, centralizou `env.ts`, `prisma.ts`, `pg.ts`, `gemini.ts` e `elastic.ts`, tipou serviços/rotas sem `any` e configurou `tsconfig.json` e `package.json`. | Ajuste nos caminhos de importação do cliente gerado (`../../generated/prisma/client`), remoção de instâncias duplicadas de `PrismaClient` e criação de wrappers CommonJS (`seed.js`, `benchmark.js`) para suportar execução direta via `node`. |
-| **5** | `2026-11-08` | `Nizo0UZ` (Lucas) & Dupla | **Fase 3 — Seed de 5.000 Chamados (`node src/seed.js`)** | Criar seeder idempotente com `@faker-js/faker` (`pt_BR`), `bcrypt`, 10 categorias, 50 usuários, 20 artigos, 5.000 chamados (40 realistas de TI escritos à mão + 4.960 sintéticos) e indexação de embeddings em lotes. | Implementou `src/seed.ts` com inserções em lote (`createMany` em `prisma.$transaction`) e indexação semântica com `batchEmbedContents`. | 1. **Proteção de Rate-Limit da cota gratuita Gemini:** restringimos a geração de embeddings via API durante o seed aos **40 chamados realistas** + **20 artigos** (lotes de 20 com delay de `1.500 ms`).<br>2. **Reinício de sequências (`ALTER SEQUENCE ... RESTART WITH 1`) e sincronização automática com Elasticsearch** ao final do `node src/seed.js`. |
-| **6** | `2026-11-08` | `Nizo0UZ` (Lucas) & Dupla | **Fase 4 — API REST (Express + Zod) e Transações** | Implementar rotas REST obrigatórias com validação `zod`, transações `prisma.$transaction` (resolver chamado = status + solução + comentário + reindexar), regras de negócio (`ATENDENTE`, `FECHADO`) e middleware de erros (`P2002`→`409`, `P2003`→`400`). | Implementou rotas (`categorias`, `usuarios`, `chamados`, `artigos`), `chamadoService.ts`, `erros.ts`, `validacao.ts` e suíte de testes automatizados (`src/chamados.test.ts`). | Refinamento do tratamento transacional: garantia de rollback completo nas regras de negócio e tratamento resiliente na indexação externa para não corromper dados em caso de timeout de rede. |
-| **7** | `2026-11-08` | `Nizo0UZ` (Lucas) & Dupla | **Fase 5 & 6 — RAG (`pgvector` + Gemini) e Elasticsearch** | Implementar `GET /busca/semantica`, `POST /rag/perguntar` (resposta gerada com citação de IDs), índice `chamados` no Elasticsearch com analisador `brazilian`, sincronização `bulk` e `GET /busca/texto` + `/busca/comparar`. | Criou `ragService.ts`, `buscaService.ts`, `scripts/sincronizar-elastic.ts` e as rotas `/busca/*` e `/rag/perguntar`. | 1. **Fallback automático de modelos Gemini (`gemini-2.5-flash` → `gemini-2.0-flash` → `gemini-2.0-flash-lite`)** em `ragService.ts`.<br>2. **Prompt restritivo anti-alucinação** exigindo citações no formato `[Chamado #id]` e `[Artigo #id]`. |
-| **8** | `2026-11-08` | `Nizo0UZ` (Lucas) & Dupla | **Fase 7 — Desempenho (`EXPLAIN ANALYZE` e Benchmark 5.000+)** | Rodar `EXPLAIN ANALYZE` comprovando uso de índices (`B-tree`, composto `[status, categoriaId]`, `GIN` full-text e `HNSW`), medir `ILIKE` × `pgvector` × `Elasticsearch` em 5.000+ registros e registrar no `README.md`. | Criou a migration `20261108221000_indice_composto_status_categoria_fts_gin`, o script `scripts/benchmark.ts` (`.js`) e a documentação de performance. | 1. **Reescrita da query vetorial com subquery `top_docs`:** isolamos o `ORDER BY embedding <=> $1 LIMIT K` antes dos `LEFT JOIN` para baixar o custo estimado pelo planner de `~952` para `524.65` (abaixo dos `628.23` do `Seq Scan`), reduzindo a execução de `41.87 ms` para **`0.916 ms`** (**45,7x mais rápido**).<br>2. **Cache de `pgvector.registerTypes` via `WeakSet<PoolClient>`** em `src/config/pg.ts`. |
+| **1** | `2026-11-05` | `Nizo0UZ` (Lucas) | **Fase 0 — Docker, `pgvector` e Embeddings** | Configurar `docker-compose.yml` (`pgvector:pg16`, pgAdmin, Elasticsearch), migration da tabela `Documentos` com índice HNSW e script de embeddings Gemini. | Sugeriu `@google/generative-ai` com modelo `text-embedding-004` (768 dims) e SQL inicial da tabela `Documentos`. | 1. **Troca de `text-embedding-004` por `gemini-embedding-001` (`1536` dimensões)** na nova SDK `@google/genai` com `outputDimensionality: 1536` e `taskType` (`RETRIEVAL_DOCUMENT` / `RETRIEVAL_QUERY`).<br>2. **Ajuste manual do SQL da migration (`20261106004222_add_pgvector_documentos`)**: coluna `VECTOR(1536)` e criação do índice `documentos_embedding_hnsw_idx` (`USING hnsw (embedding vector_cosine_ops)`). |
+| **2** | `2026-11-08` | `Nizo0UZ` (Lucas) | **Fase 1.1 — Ajustar Modelagem Prisma (`Documentos` + FK)** | Trazer `Documentos` para o `schema.prisma` com `Unsupported("vector(1536)")`, FKs opcionais `chamadoId`/`artigoId` e declarar extensão `vector` no `datasource`. | Entregou o bloco `datasource` com `extensions = [vector]`, o modelo `Documentos` com FKs `SetNull` e a migration `20261108213939_documentos_fk_chamado_artigo`. | **Identificação de *drift* no índice HNSW:** o Prisma gerou `DROP INDEX "documentos_embedding_hnsw_idx";` na migration `20261108213939` por não suportar `type: Hnsw` em colunas `Unsupported`. Isso motivou a intervenção manual na migration seguinte sem violar o histórico versionado. |
+| **3** | `2026-11-08` | `Nizo0UZ` (Lucas) | **Fase 1.2 — Enriquecer Modelagem Prisma e Prisma 7** | Adicionar `Comentario` (1:N), `Tag`/`ChamadoTag` (N:N explícita), `Artigo` (1:N com `Usuario` e `Categoria`), `solucao`/`resolvidoEm` em `Chamado`, `onDelete` explícito, preservar HNSW e migrar para o padrão Prisma 7. | Gerou o schema completo com 8 tabelas, justificativas de `onDelete`, configuração `prisma-client` + `@prisma/adapter-pg` e script `scripts/teste-prisma.ts`. | 1. **Edição manual da migration (`--create-only`):** foi adicionado manualmente `CREATE INDEX IF NOT EXISTS documentos_embedding_hnsw_idx ...` ao final de `20261108214949_comentarios_tags_artigo_autor_categoria_solucao/migration.sql` e aplicado com `migrate deploy`.<br>2. **Configuração de `moduleFormat = "cjs"`** no gerador do Prisma 7 para compatibilidade entre TypeScript (`tsx`) e scripts `.js`. |
+| **4** | `2026-11-08` | `Nizo0UZ` (Lucas) | **Fase 2 — Estrutura `src/` e Migração para TypeScript** | Reorganizar `backend/` em `src/{config,services,routes,middlewares}`, migrar `embeddings.js` para `embeddingService.ts`, criar singleton `prisma.ts` e converter tudo para TypeScript estrito. | Criou toda a árvore `src/`, centralizou `env.ts`, `prisma.ts`, `pg.ts`, `gemini.ts` e `elastic.ts`, tipou serviços/rotas sem `any` e configurou `tsconfig.json` e `package.json`. | Ajuste nos caminhos de importação do cliente gerado (`../../generated/prisma/client`), remoção de instâncias duplicadas de `PrismaClient` e criação de wrappers CommonJS (`seed.js`, `benchmark.js`) para suportar execução direta via `node`. |
+| **5** | `2026-11-08` | `Nizo0UZ` (Lucas) | **Fase 3 — Seed de 5.000 Chamados (`node src/seed.js`)** | Criar seeder idempotente com `@faker-js/faker` (`pt_BR`), `bcrypt`, 10 categorias, 50 usuários, 20 artigos, 5.000 chamados (40 realistas de TI escritos à mão + 4.960 sintéticos) e indexação de embeddings em lotes. | Implementou `src/seed.ts` com inserções em lote (`createMany` em `prisma.$transaction`) e indexação semântica com `batchEmbedContents`. | 1. **Proteção de Rate-Limit da cota gratuita Gemini:** restringi a geração de embeddings via API durante o seed aos **40 chamados realistas** + **20 artigos** (lotes de 20 com delay de `1.500 ms`).<br>2. **Reinício de sequências (`ALTER SEQUENCE ... RESTART WITH 1`) e sincronização automática com Elasticsearch** ao final do `node src/seed.js`. |
+| **6** | `2026-11-08` | `Nizo0UZ` (Lucas) | **Fase 4 — API REST (Express + Zod) e Transações** | Implementar rotas REST obrigatórias com validação `zod`, transações `prisma.$transaction` (resolver chamado = status + solução + comentário + reindexar), regras de negócio (`ATENDENTE`, `FECHADO`) e middleware de erros (`P2002`→`409`, `P2003`→`400`). | Implementou rotas (`categorias`, `usuarios`, `chamados`, `artigos`), `chamadoService.ts`, `erros.ts`, `validacao.ts` e suíte de testes automatizados (`src/chamados.test.ts`). | Refinamento do tratamento transacional: garantia de rollback completo nas regras de negócio e tratamento resiliente na indexação externa para não corromper dados em caso de timeout de rede. |
+| **7** | `2026-11-08` | `Nizo0UZ` (Lucas) | **Fase 5 & 6 — RAG (`pgvector` + Gemini) e Elasticsearch** | Implementar `GET /busca/semantica`, `POST /rag/perguntar` (resposta gerada com citação de IDs), índice `chamados` no Elasticsearch com analisador `brazilian`, sincronização `bulk` e `GET /busca/texto` + `/busca/comparar`. | Criou `ragService.ts`, `buscaService.ts`, `scripts/sincronizar-elastic.ts` e as rotas `/busca/*` e `/rag/perguntar`. | 1. **Fallback automático de modelos Gemini (`gemini-2.5-flash` → `gemini-2.0-flash` → `gemini-2.0-flash-lite`)** em `ragService.ts`.<br>2. **Prompt restritivo anti-alucinação** exigindo citações no formato `[Chamado #id]` e `[Artigo #id]`. |
+| **8** | `2026-11-08` | `Nizo0UZ` (Lucas) | **Fase 7 — Desempenho (`EXPLAIN ANALYZE` e Benchmark 5.000+)** | Rodar `EXPLAIN ANALYZE` comprovando uso de índices (`B-tree`, composto `[status, categoriaId]`, `GIN` full-text e `HNSW`), medir `ILIKE` × `pgvector` × `Elasticsearch` em 5.000+ registros e registrar no `README.md`. | Criou a migration `20261108221000_indice_composto_status_categoria_fts_gin`, o script `scripts/benchmark.ts` (`.js`) e a documentação de performance. | 1. **Reescrita da query vetorial com subquery `top_docs`:** isolei o `ORDER BY embedding <=> $1 LIMIT K` antes dos `LEFT JOIN` para baixar o custo estimado pelo planner de `~952` para `524.65` (abaixo dos `628.23` do `Seq Scan`), reduzindo a execução de `41.87 ms` para **`0.916 ms`** (**45,7x mais rápido**).<br>2. **Cache de `pgvector.registerTypes` via `WeakSet<PoolClient>`** em `src/config/pg.ts`. |
 
 ---
 
 ## 2. Auditoria Detalhada: Prompts na Íntegra e Adaptações Manuais por Fase
 
-Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arquivo [`backend/prompts.md`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prompts.md) e sessões de desenvolvimento) seguidos da análise crítica e das adaptações manuais realizadas.
+Abaixo estão registrados os prompts exatos utilizados pelo autor (conforme arquivo [`backend/prompts.md`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prompts.md) e sessões de desenvolvimento) seguidos da análise crítica e das adaptações manuais realizadas.
 
 ---
 
 ### Fase 0 — Infraestrutura Docker, `pgvector` e Embeddings Gemini
 
 - **Data:** `2026-11-05`
-- **Autor:** `Nizo0UZ` (Lucas) & Dupla
+- **Autor:** `Nizo0UZ` (Lucas)
 - **Prompt utilizado:**
   > *"Crie um ambiente `docker-compose.yml` com PostgreSQL 16 (imagem com `pgvector`), pgAdmin 4 e Elasticsearch. Crie também uma migration SQL para habilitar a extensão `vector`, criar a tabela `Documentos` com coluna de embedding e índice HNSW para busca por similaridade de cosseno, além de um script em Node.js que gere embeddings com a API do Google Gemini e consulte os documentos mais similares."*
 
@@ -52,12 +52,12 @@ Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arqu
   - Gerou o `docker-compose.yml` com os 3 serviços e volumes persistentes.
   - Sugeriu inicialmente um script de embeddings baseado na biblioteca antiga `@google/generative-ai` usando o modelo `text-embedding-004` (768 dimensões).
 
-- **Adaptações manuais feitas pela dupla:**
+- **Adaptações manuais realizadas:**
   1. **Troca do modelo `text-embedding-004` por `gemini-embedding-001` com `1536` dimensões:**
      - O modelo `text-embedding-004` sugerido inicialmente pela IA não estava mais disponível na versão atual da API Gemini.
-     - Migramos para a nova SDK oficial `@google/genai` (`GoogleGenAI`) utilizando o modelo **`gemini-embedding-001`** configurado explicitamente com `outputDimensionality: 1536` e `taskType: 'RETRIEVAL_DOCUMENT'` (para indexação) / `'RETRIEVAL_QUERY'` (para busca).
+     - Realizei a migração para a nova SDK oficial `@google/genai` (`GoogleGenAI`) utilizando o modelo **`gemini-embedding-001`** configurado explicitamente com `outputDimensionality: 1536` e `taskType: 'RETRIEVAL_DOCUMENT'` (para indexação) / `'RETRIEVAL_QUERY'` (para busca).
   2. **Ajuste manual do DDL na migration [`20261106004222_add_pgvector_documentos/migration.sql`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prisma/migrations/20261106004222_add_pgvector_documentos/migration.sql):**
-     - Ajustamos a definição da coluna para `embedding VECTOR(1536) NOT NULL` e configuramos o índice HNSW com `m = 16` e `ef_construction = 64`:
+     - Ajustei a definição da coluna para `embedding VECTOR(1536) NOT NULL` e configurei o índice HNSW com `m = 16` e `ef_construction = 64`:
        ```sql
        CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -72,7 +72,7 @@ Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arqu
 ### Fase 1 (Parte 1) — Ajustar Modelagem Prisma (`Documentos` + `pgvector`)
 
 - **Data:** `2026-11-08`
-- **Autor:** `Nizo0UZ` (Lucas) & Dupla
+- **Autor:** `Nizo0UZ` (Lucas)
 - **Prompt utilizado (na íntegra — ver [`backend/prompts.md`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prompts.md#L1-L17)):**
   ```markdown
   Você é um engenheiro de backend sênior com experiência em Prisma ORM, PostgreSQL e extensão pgvector, trabalhando em um projeto Node/TypeScript existente. Preciso que você faça a Fase 1 da migração de modelagem (Trilha A) no arquivo `schema.prisma` do meu projeto, sem alterar nada além do necessário para essa fase.
@@ -96,20 +96,20 @@ Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arqu
   - Criou o modelo `Artigo` básico e trouxe `Documentos` para o `schema.prisma` com `embedding Unsupported("vector(1536)")` e FKs opcionais `chamadoId` e `artigoId` (`onDelete: SetNull`).
   - Gerou a migration [`20261108213939_documentos_fk_chamado_artigo/migration.sql`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prisma/migrations/20261108213939_documentos_fk_chamado_artigo/migration.sql).
 
-- **Adaptações manuais feitas pela dupla:**
-  - Ao inspecionar o SQL gerado pelo Prisma na migration `20261108213939_documentos_fk_chamado_artigo`, identificamos que a primeira linha gerada pelo Prisma Migrate foi:
+- **Adaptações manuais realizadas:**
+  - Ao inspecionar o SQL gerado pelo Prisma na migration `20261108213939_documentos_fk_chamado_artigo`, identifiquei que a primeira linha gerada pelo Prisma Migrate foi:
     ```sql
     -- DropIndex
     DROP INDEX "documentos_embedding_hnsw_idx";
     ```
-  - Isso ocorreu porque o índice HNSW havia sido criado manualmente na migration anterior (`20261106004222`), mas não podia ser declarado no `schema.prisma` (o Prisma 7 rejeita `@@index([embedding], type: Hnsw)` em colunas `Unsupported`). Tratamos esse ponto na migration imediatamente seguinte (Fase 1 — Parte 2) para restaurar e blindar o índice HNSW sem reescrever migrations já commitadas.
+  - Isso ocorreu porque o índice HNSW havia sido criado manualmente na migration anterior (`20261106004222`), mas não podia ser declarado no `schema.prisma` (o Prisma 7 rejeita `@@index([embedding], type: Hnsw)` em colunas `Unsupported`). Tratei esse ponto na migration imediatamente seguinte (Fase 1 — Parte 2) para restaurar e blindar o índice HNSW sem reescrever migrations já commitadas.
 
 ---
 
 ### Fase 1 (Parte 2) — Enriquecer Modelagem Prisma com Relacionamentos Complexos e Prisma 7
 
 - **Data:** `2026-11-08`
-- **Autor:** `Nizo0UZ` (Lucas) & Dupla
+- **Autor:** `Nizo0UZ` (Lucas)
 - **Prompt utilizado (na íntegra — ver [`backend/prompts.md`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prompts.md#L19-L49)):**
   ```markdown
   # Prompt: Enriquecer a modelagem Prisma do sistema de chamados com relacionamentos complexos
@@ -148,24 +148,24 @@ Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arqu
   - Atualizou o gerador para o padrão do Prisma 7 (`provider = "prisma-client"`, `output = "../generated/prisma"`, `moduleFormat = "cjs"`) e configurou a conexão via `@prisma/adapter-pg` (`PrismaPg`).
   - Criou e executou `scripts/teste-prisma.ts` validando `findMany` e `$transaction`.
 
-- **Adaptações manuais feitas pela dupla:**
+- **Adaptações manuais realizadas:**
   1. **Fluxo `--create-only` + Edição manual do SQL + `migrate deploy`:**
-     - Geramos a migration [`20261108214949_comentarios_tags_artigo_autor_categoria_solucao/migration.sql`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prisma/migrations/20261108214949_comentarios_tags_artigo_autor_categoria_solucao/migration.sql) com `npx prisma migrate dev --create-only`.
-     - Adicionamos manualmente ao final do arquivo SQL a recriação idempotente do índice HNSW:
+     - Gerei a migration [`20261108214949_comentarios_tags_artigo_autor_categoria_solucao/migration.sql`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prisma/migrations/20261108214949_comentarios_tags_artigo_autor_categoria_solucao/migration.sql) com `npx prisma migrate dev --create-only`.
+     - Adicionei manualmente ao final do arquivo SQL a recriação idempotente do índice HNSW:
        ```sql
        CREATE INDEX IF NOT EXISTS documentos_embedding_hnsw_idx
            ON "Documentos"
            USING hnsw (embedding vector_cosine_ops)
            WITH (m = 16, ef_construction = 64);
        ```
-     - Aplicamos a migration com `npx prisma migrate deploy` para evitar que um novo diff automático do `migrate dev` gerasse outro `DROP INDEX`.
+     - Apliquei a migration com `npx prisma migrate deploy` para evitar que um novo diff automático do `migrate dev` gerasse outro `DROP INDEX`.
 
 ---
 
 ### Fase 2 — Estrutura do Código em Camadas (`src/`) e Migração para TypeScript
 
 - **Data:** `2026-11-08`
-- **Autor:** `Nizo0UZ` (Lucas) & Dupla
+- **Autor:** `Nizo0UZ` (Lucas)
 - **Prompt utilizado (na íntegra — ver [`backend/prompts.md`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prompts.md#L52-L91)):**
   ```markdown
   Você é um engenheiro de software sênior, especialista em Node.js, TypeScript, Prisma, PostgreSQL, Elasticsearch e integração com a API do Gemini, responsável por reorganizar a estrutura de um backend existente e migrá-lo para TypeScript.
@@ -202,33 +202,33 @@ Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arqu
   - Centralizou a validação de variáveis de ambiente em [`src/config/env.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/config/env.ts) e o singleton do Prisma em [`src/config/prisma.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/config/prisma.ts).
   - Migrou `embeddings.js` para [`src/services/embeddingService.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/services/embeddingService.ts) com tipagem estrita (`strict: true` no `tsconfig.json`).
 
-- **Adaptações manuais feitas pela dupla:**
-  - Adicionamos wrappers de entrada CommonJS ([`src/seed.js`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/seed.js) e [`scripts/benchmark.js`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/scripts/benchmark.js)) utilizando `require('tsx/cjs')` para garantir que comandos executados diretamente com `node` (como `node src/seed.js` exigido no roteiro de avaliação) funcionem sem exigir compilação prévia manual com `tsc`.
+- **Adaptações manuais realizadas:**
+  - Adicionei wrappers de entrada CommonJS ([`src/seed.js`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/seed.js) e [`scripts/benchmark.js`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/scripts/benchmark.js)) utilizando `require('tsx/cjs')` para garantir que comandos executados diretamente com `node` (como `node src/seed.js` exigido no roteiro de avaliação) funcionem sem exigir compilação prévia manual com `tsc`.
 
 ---
 
 ### Fase 3 — Seed Idempotente de 5.000 Chamados (`node src/seed.js`)
 
 - **Data:** `2026-11-08`
-- **Autor:** `Nizo0UZ` (Lucas) & Dupla
+- **Autor:** `Nizo0UZ` (Lucas)
 - **Prompt utilizado:**
   > *"Implemente o seeder idempotente em `src/seed.ts` utilizando `@faker-js/faker` (locale `pt_BR`) e `bcrypt` para gerar: 10 categorias de TI, 50 usuários com papéis (`SOLICITANTE`, `ATENDENTE`, `ADMIN`) e senhas com hash `bcrypt`, 20 artigos técnicos da base de conhecimento, e 5.000 chamados (sendo 40 chamados realistas de TI escritos à mão com soluções detalhadas + 4.960 chamados sintéticos), além de comentários e associações N:N de tags (`ChamadoTag`). Insira em lotes com `createMany` dentro de `prisma.$transaction` e gere os embeddings dos chamados realistas e artigos respeitando a cota gratuita do Gemini."*
 
 - **O que a IA respondeu:**
   - Criou [`backend/src/seed.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/seed.ts) com 40 incidentes reais de TI (VPN FortiClient, BitLocker 48 dígitos, impressora manchando/atolando, senha do Active Directory, certificado SEFAZ A1, etc.), 20 artigos completos e 4.960 chamados gerados via Faker (`pt_BR` com semente fixa `faker.seed(20261108)` para reprodutibilidade).
 
-- **Adaptações manuais feitas pela dupla:**
+- **Adaptações manuais realizadas:**
   1. **Controle de cota (Rate-Limit) do Gemini no Seed:**
-     - Gerar 5.000 embeddings na API gratuita do Gemini durante o `seed` excederia o limite de requisições por minuto (RPM). Ajustamos o `seed.ts` para gerar embeddings reais na API Gemini apenas para os **40 chamados realistas** e **20 artigos** (em lotes de 20 com pausa de `1.500 ms`), deixando a flag `--skip-embeddings` disponível e um script dedicado `npm run reindex`.
+     - Gerar 5.000 embeddings na API gratuita do Gemini durante o `seed` excederia o limite de requisições por minuto (RPM). Ajustei o `seed.ts` para gerar embeddings reais na API Gemini apenas para os **40 chamados realistas** e **20 artigos** (em lotes de 20 com pausa de `1.500 ms`), deixando a flag `--skip-embeddings` disponível e um script dedicado `npm run reindex`.
   2. **Reinício determinístico das sequências (`ALTER SEQUENCE ... RESTART WITH 1`) e sincronização com Elasticsearch:**
-     - Como `deleteMany()` não reseta contadores `SERIAL` no PostgreSQL, adicionamos `ALTER SEQUENCE ... RESTART WITH 1` na transação de limpeza para garantir que os IDs comecem sempre em `1` após rodar `node src/seed.js`, além de disparar a sincronização Bulk com o Elasticsearch ao final do seed.
+     - Como `deleteMany()` não reseta contadores `SERIAL` no PostgreSQL, adicionei `ALTER SEQUENCE ... RESTART WITH 1` na transação de limpeza para garantir que os IDs comecem sempre em `1` após rodar `node src/seed.js`, além de disparar a sincronização Bulk com o Elasticsearch ao final do seed.
 
 ---
 
 ### Fase 4 — API REST (Express + Zod), Transações ACID e Tratamento de Erros
 
 - **Data:** `2026-11-08`
-- **Autor:** `Nizo0UZ` (Lucas) & Dupla
+- **Autor:** `Nizo0UZ` (Lucas)
 - **Prompt utilizado (na íntegra — ver [`backend/prompts.md`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prompts.md#L94-L127)):**
   ```markdown
   Você é um engenheiro de back-end sênior especializado em Node.js, Express, Prisma ORM e PostgreSQL, com experiência em APIs REST de sistemas de help desk e gestão de chamados. Sua tarefa é implementar a Fase 4 de um projeto existente: uma API REST em Express que expõe as rotas mínimas descritas abaixo, com validação de entrada, operações transacionais e tratamento centralizado de erros do Prisma.
@@ -268,15 +268,15 @@ Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arqu
 - **O que a IA respondeu:**
   - Implementou as rotas REST com validação `zod`, o serviço transacional [`src/services/chamadoService.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/services/chamadoService.ts), o middleware [`src/middlewares/erros.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/middlewares/erros.ts) e a suíte de testes [`src/chamados.test.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/chamados.test.ts).
 
-- **Adaptações manuais feitas pela dupla:**
-  - No Prisma 7 com driver adapter `@prisma/adapter-pg`, conexões transacionais interativas (`prisma.$transaction(async (tx) => ...)`) possuem timeout padrão de 5 segundos. Para evitar que a chamada externa HTTP à API do Gemini (`gerarEmbeddingDocumento`) mantivesse a transação PostgreSQL aberta por muito tempo ou falhasse sob instabilidade de rede, ajustamos o fluxo para gerar o vetor e persistir na tabela `"Documentos"` usando o cliente transacional `tx.$executeRaw` com timeout estendido (`maxWait: 10000, timeout: 20000`), além de sincronizar de forma assíncrona o documento atualizado com o Elasticsearch.
+- **Adaptações manuais realizadas:**
+  - No Prisma 7 com driver adapter `@prisma/adapter-pg`, conexões transacionais interativas (`prisma.$transaction(async (tx) => ...)`) possuem timeout padrão de 5 segundos. Para evitar que a chamada externa HTTP à API do Gemini (`gerarEmbeddingDocumento`) mantivesse a transação PostgreSQL aberta por muito tempo ou falhasse sob instabilidade de rede, ajustei o fluxo para gerar o vetor e persistir na tabela `"Documentos"` usando o cliente transacional `tx.$executeRaw` com timeout estendido (`maxWait: 10000, timeout: 20000`), além de sincronizar de forma assíncrona o documento atualizado com o Elasticsearch.
 
 ---
 
 ### Fase 5 & 6 — Recuperação Inteligente (RAG) e Busca Full-Text (Elasticsearch)
 
 - **Data:** `2026-11-08`
-- **Autor:** `Nizo0UZ` (Lucas) & Dupla
+- **Autor:** `Nizo0UZ` (Lucas)
 - **Prompt utilizado:**
   > *"Implemente a Fase 5 (RAG — Trilha C) e a Fase 6 (Elasticsearch — Trilha B):*
   > *1. `GET /busca/semantica?q=...&k=5` combinando similaridade vetorial (`ORDER BY embedding <=> $1`) com filtros relacionais (`status`, `categoriaId`) e limiar mínimo de similaridade.*
@@ -286,15 +286,15 @@ Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arqu
 - **O que a IA respondeu:**
   - Implementou [`src/services/ragService.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/services/ragService.ts), [`src/services/buscaService.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/services/buscaService.ts), [`src/routes/busca.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/routes/busca.ts) e [`scripts/sincronizar-elastic.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/scripts/sincronizar-elastic.ts).
 
-- **Adaptações manuais feitas pela dupla:**
-  - Configuramos uma cadeia de fallback automático de modelos generativos em [`src/config/gemini.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/config/gemini.ts) (`gemini-2.5-flash` → `gemini-2.0-flash` → `gemini-2.0-flash-lite`): se o modelo principal retornar erro `429` (cota gratuita) ou `503`, o `ragService.ts` tenta automaticamente o próximo modelo e informa no JSON final qual `modeloGeracao` respondeu.
+- **Adaptações manuais realizadas:**
+  - Configurei uma cadeia de fallback automático de modelos generativos em [`src/config/gemini.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/config/gemini.ts) (`gemini-2.5-flash` → `gemini-2.0-flash` → `gemini-2.0-flash-lite`): se o modelo principal retornar erro `429` (cota gratuita) ou `503`, o `ragService.ts` tenta automaticamente o próximo modelo e informa no JSON final qual `modeloGeracao` respondeu.
 
 ---
 
 ### Fase 7 — Desempenho nas Consultas (`EXPLAIN ANALYZE`, Índices Compostos/GIN e Benchmark)
 
 - **Data:** `2026-11-08`
-- **Autor:** `Nizo0UZ` (Lucas) & Dupla
+- **Autor:** `Nizo0UZ` (Lucas)
 - **Prompt utilizado:**
   > *"Desempenho (critério 'desempenho nas consultas'):*
   > *1. Rodar `EXPLAIN ANALYZE` nas consultas principais e mostrar o uso dos índices (B-tree em `status`/`categoria_id`, HNSW no `embedding`).*
@@ -305,12 +305,12 @@ Abaixo estão registrados os prompts exatos utilizados pela dupla (conforme arqu
 - **O que a IA respondeu:**
   - Adicionou `@@index([status, categoriaId])` ao `schema.prisma`, criou a migration [`20261108221000_indice_composto_status_categoria_fts_gin/migration.sql`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/prisma/migrations/20261108221000_indice_composto_status_categoria_fts_gin/migration.sql) e desenvolveu [`scripts/benchmark.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/scripts/benchmark.ts).
 
-- **Adaptações manuais feitas pela dupla:**
+- **Adaptações manuais realizadas:**
   1. **Otimização da Query Vetorial (`HNSW`) para o Planner do PostgreSQL:**
-     - Ao popular **5.020 vetores de 1.536 dimensões** na tabela `"Documentos"`, observamos no `EXPLAIN (ANALYZE, BUFFERS)` que fazer `LEFT JOIN "Chamado"` antes do `ORDER BY d.embedding <=> $1 LIMIT $2` (parametrizado) fazia o otimizador do PostgreSQL estimar custo `~952` para o `Index Scan` contra `628.23` para o `Seq Scan`, deixando de usar o índice HNSW quando `enable_seqscan = on`.
-     - Reescrevemos [`buscarSimilares`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/services/embeddingService.ts#L50-L92) isolando a busca ANN em uma subquery interna (`top_docs`) com `LIMIT` inteiro literal saneado *antes* dos `LEFT JOIN` com `"Chamado"` e `"Categoria"`. O custo planejado caiu para `524.65` e a busca vetorial passou a executar `Index Scan using documentos_embedding_hnsw_idx` em **0,916 ms** (contra **41,871 ms** do `Seq Scan` — **45,7x mais rápido**).
+     - Ao popular **5.020 vetores de 1.536 dimensões** na tabela `"Documentos"`, observei no `EXPLAIN (ANALYZE, BUFFERS)` que fazer `LEFT JOIN "Chamado"` antes do `ORDER BY d.embedding <=> $1 LIMIT $2` (parametrizado) fazia o otimizador do PostgreSQL estimar custo `~952` para o `Index Scan` contra `628.23` para o `Seq Scan`, deixando de usar o índice HNSW quando `enable_seqscan = on`.
+     - Reescrevi [`buscarSimilares`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/services/embeddingService.ts#L50-L92) isolando a busca ANN em uma subquery interna (`top_docs`) com `LIMIT` inteiro literal saneado *antes* dos `LEFT JOIN` com `"Chamado"` e `"Categoria"`. O custo planejado caiu para `524.65` e a busca vetorial passou a executar `Index Scan using documentos_embedding_hnsw_idx` em **0,916 ms** (contra **41,871 ms** do `Seq Scan` — **45,7x mais rápido**).
   2. **Cache de `pgvector.registerTypes` por conexão física do Pool:**
-     - Em [`src/config/pg.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/config/pg.ts), adicionamos um `WeakSet<PoolClient>` no evento `pool.on('connect')` para registrar os tipos do `pgvector` uma única vez por conexão criada no pool.
+     - Em [`src/config/pg.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/config/pg.ts), adicionei um `WeakSet<PoolClient>` no evento `pool.on('connect')` para registrar os tipos do `pgvector` uma única vez por conexão criada no pool.
 
 ---
 
