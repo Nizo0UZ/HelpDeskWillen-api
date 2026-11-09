@@ -11,6 +11,7 @@
     "migrate": "prisma migrate dev",
     "studio": "prisma studio",
     "reindex": "tsx src/services/embeddingService.ts",
+    "sync:elastic": "tsx scripts/sincronizar-elastic.ts",
     "test": "tsx --test src/chamados.test.ts"
   },
   "keywords": [],

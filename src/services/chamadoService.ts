@@ -13,6 +13,7 @@ import {
   salvarEmbeddingChamadoTx,
   type GeradorEmbeddingFn,
 } from './embeddingService';
+import { sincronizarChamadoNoElastic } from './buscaService';
 
 export interface CriarChamadoInput {
   titulo: string;
@@ -151,6 +152,14 @@ export async function criarChamado(
 
     const { categoria: _categoria, ...chamadoSemJoin } = novoChamado;
     return chamadoSemJoin;
+  }).then(async (chamadoCriado) => {
+    try {
+      await sincronizarChamadoNoElastic(chamadoCriado.id);
+    } catch (erroElastic: unknown) {
+      const msg = erroElastic instanceof Error ? erroElastic.message : String(erroElastic);
+      console.warn(`⚠️ Falha ao sincronizar chamado #${chamadoCriado.id} no Elasticsearch: ${msg}`);
+    }
+    return chamadoCriado;
   });
 }
 
@@ -353,6 +362,14 @@ export async function atualizarStatusChamado(
     }
 
     return detalhado;
+  }).then(async (chamadoAtualizado) => {
+    try {
+      await sincronizarChamadoNoElastic(chamadoAtualizado.id);
+    } catch (erroElastic: unknown) {
+      const msg = erroElastic instanceof Error ? erroElastic.message : String(erroElastic);
+      console.warn(`⚠️ Falha ao atualizar chamado #${chamadoAtualizado.id} no Elasticsearch: ${msg}`);
+    }
+    return chamadoAtualizado;
   });
 }
 

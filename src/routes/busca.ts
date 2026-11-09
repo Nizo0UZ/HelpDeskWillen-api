@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { LIMIAR_SIMILARIDADE_PADRAO } from '../config/gemini';
 import { StatusChamado } from '../config/prisma';
 import { validarBody, validarDados } from '../middlewares/validacao';
-import { buscarPorSimilaridade } from '../services/buscaService';
+import {
+  buscarPorSimilaridade,
+  buscarPorTextoElastic,
+  compararBuscas,
+} from '../services/buscaService';
 import { perguntarRag } from '../services/ragService';
 
 export const buscaSemanticaQuerySchema = z.object({
@@ -32,6 +36,21 @@ export const buscaSemanticaQuerySchema = z.object({
     .transform((v) => v === 'true'),
 });
 
+export const buscaTextoQuerySchema = z.object({
+  q: z.string().trim().min(1, 'O parâmetro de busca "q" é obrigatório.'),
+  k: z.coerce.number().int().positive().max(50).optional().default(5),
+  status: z
+    .enum([
+      StatusChamado.ABERTO,
+      StatusChamado.EM_ANDAMENTO,
+      StatusChamado.AGUARDANDO,
+      StatusChamado.RESOLVIDO,
+      StatusChamado.FECHADO,
+    ])
+    .optional(),
+  categoriaId: z.coerce.number().int().positive().optional(),
+});
+
 export const ragPerguntarBodySchema = z.object({
   pergunta: z.string().trim().min(1, 'O campo "pergunta" é obrigatório.'),
   k: z.number().int().positive().max(20).optional().default(5),
@@ -55,6 +74,7 @@ export const ragPerguntarBodySchema = z.object({
 });
 
 export type BuscaSemanticaQuery = z.infer<typeof buscaSemanticaQuerySchema>;
+export type BuscaTextoQuery = z.infer<typeof buscaTextoQuerySchema>;
 export type RagPerguntarRequest = z.infer<typeof ragPerguntarBodySchema>;
 
 export const buscaRouter = Router();
@@ -75,6 +95,31 @@ buscaRouter.get(
     });
 
     res.status(200).json(resultado);
+  }
+);
+
+buscaRouter.get(
+  '/texto',
+  async (req: Request, res: Response): Promise<void> => {
+    const query = validarDados(buscaTextoQuerySchema, req.query);
+    const resultado = await buscarPorTextoElastic({
+      query: query.q,
+      k: query.k,
+      status: query.status,
+      categoriaId: query.categoriaId,
+    });
+
+    res.status(200).json(resultado);
+  }
+);
+
+buscaRouter.get(
+  '/comparar',
+  async (req: Request, res: Response): Promise<void> => {
+    const query = validarDados(buscaTextoQuerySchema, req.query);
+    const comparacao = await compararBuscas(query.q, query.k);
+
+    res.status(200).json(comparacao);
   }
 );
 
