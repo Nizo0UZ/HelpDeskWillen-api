@@ -108,6 +108,7 @@ model Chamado {
 
   @@index([status])
   @@index([categoriaId])
+  @@index([status, categoriaId])
   @@index([solicitanteId])
   @@index([atendenteId])
   @@map("Chamado")

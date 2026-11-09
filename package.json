@@ -12,6 +12,7 @@
     "studio": "prisma studio",
     "reindex": "tsx src/services/embeddingService.ts",
     "sync:elastic": "tsx scripts/sincronizar-elastic.ts",
+    "benchmark": "tsx scripts/benchmark.ts",
     "test": "tsx --test src/chamados.test.ts"
   },
   "keywords": [],

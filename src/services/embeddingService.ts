@@ -10,7 +10,7 @@ import {
   EMBEDDING_MODEL,
   LIMIAR_SIMILARIDADE_PADRAO,
 } from '../config/gemini';
-import { clienteComVetor, encerrarPool } from '../config/pg';
+import { clienteComVetor, encerrarPool, pool } from '../config/pg';
 import {
   PrioridadeChamado,
   Prisma,
@@ -485,15 +485,19 @@ export async function buscarSimilares(
 ): Promise<DocumentoSimilar[]> {
   const gerador = filtros.geradorEmbedding ?? gerarEmbedding;
   const embedding = await gerador(query, 'RETRIEVAL_QUERY');
-  const client = await clienteComVetor();
 
   const limiar = filtros.limiar ?? LIMIAR_SIMILARIDADE_PADRAO;
-  const valoresSql: unknown[] = [pgvector.toSql(embedding), k, limiar];
-  const condicoesWhere: string[] = ['(1 - (d.embedding <=> $1)) >= $3'];
+  const kSeguro = Math.max(1, Math.min(50, Math.trunc(k)));
+  const temFiltroRelacional =
+    filtros.status !== undefined ||
+    filtros.categoriaId !== undefined ||
+    (filtros.categoria !== undefined && filtros.categoria !== '');
+  const limiteCandidatosHnsw = temFiltroRelacional
+    ? Math.min(Math.max(kSeguro * 2, 10), 12)
+    : kSeguro;
 
-  if (filtros.apenasChamados) {
-    condicoesWhere.push('d.chamado_id IS NOT NULL');
-  }
+  const valoresSql: unknown[] = [pgvector.toSql(embedding)];
+  const condicoesWhere: string[] = [];
 
   if (filtros.status !== undefined) {
     valoresSql.push(filtros.status);
@@ -501,7 +505,7 @@ export async function buscarSimilares(
     if (filtros.apenasChamados) {
       condicoesWhere.push(`c.status::text = $${idx}`);
     } else {
-      condicoesWhere.push(`(d.chamado_id IS NULL OR c.status::text = $${idx})`);
+      condicoesWhere.push(`(top_docs.chamado_id IS NULL OR c.status::text = $${idx})`);
     }
   }
 
@@ -511,22 +515,51 @@ export async function buscarSimilares(
     if (!Number.isNaN(numeroCat) && Number.isInteger(numeroCat)) {
       valoresSql.push(numeroCat);
       const idx = valoresSql.length;
-      condicoesWhere.push(`COALESCE(c.categoria_id, a.categoria_id) = $${idx}`);
+      condicoesWhere.push(
+        filtros.apenasChamados
+          ? `c.categoria_id = $${idx}`
+          : `COALESCE(c.categoria_id, a.categoria_id) = $${idx}`
+      );
     } else {
       valoresSql.push(`%${String(filtroCategoria).trim()}%`);
       const idx = valoresSql.length;
-      condicoesWhere.push(`COALESCE(cat_c.nome, cat_a.nome) ILIKE $${idx}`);
+      condicoesWhere.push(
+        filtros.apenasChamados
+          ? `cat_c.nome ILIKE $${idx}`
+          : `COALESCE(cat_c.nome, cat_a.nome) ILIKE $${idx}`
+      );
     }
   }
 
+  const clausulaWhereSql =
+    condicoesWhere.length > 0 ? `WHERE ${condicoesWhere.join(' AND ')}` : '';
+
+  const selectArtigoSql = filtros.apenasChamados
+    ? `
+      NULL::text AS artigo_titulo,
+      NULL::text AS artigo_conteudo,
+      NULL::int AS artigo_categoria_id,
+      NULL::text AS artigo_categoria_nome`
+    : `
+      a.titulo AS artigo_titulo,
+      a.conteudo AS artigo_conteudo,
+      a.categoria_id AS artigo_categoria_id,
+      cat_a.nome AS artigo_categoria_nome`;
+
+  const joinArtigoSql = filtros.apenasChamados
+    ? ''
+    : `
+    LEFT JOIN "Artigo" a ON a.id = top_docs.artigo_id
+    LEFT JOIN "Categoria" cat_a ON cat_a.id = a.categoria_id`;
+
   const sql = `
     SELECT
-      d.id,
-      d.conteudo,
-      d.metadata,
-      d.chamado_id,
-      d.artigo_id,
-      (1 - (d.embedding <=> $1))::FLOAT AS similaridade,
+      top_docs.id,
+      top_docs.conteudo,
+      top_docs.metadata,
+      top_docs.chamado_id,
+      top_docs.artigo_id,
+      top_docs.similaridade,
       c.titulo AS chamado_titulo,
       c.descricao AS chamado_descricao,
       c.status AS chamado_status,
@@ -535,66 +568,79 @@ export async function buscarSimilares(
       c.resolvido_em AS chamado_resolvido_em,
       c.categoria_id AS chamado_categoria_id,
       cat_c.nome AS chamado_categoria_nome,
-      a.titulo AS artigo_titulo,
-      a.conteudo AS artigo_conteudo,
-      a.categoria_id AS artigo_categoria_id,
-      cat_a.nome AS artigo_categoria_nome
-    FROM "Documentos" d
-    LEFT JOIN "Chamado" c ON c.id = d.chamado_id
+      ${selectArtigoSql}
+    FROM (
+      SELECT
+        doc.id,
+        doc.conteudo,
+        doc.metadata,
+        doc.chamado_id,
+        doc.artigo_id,
+        (1 - (doc.embedding <=> $1::vector))::FLOAT AS similaridade
+      FROM "Documentos" doc
+      ORDER BY doc.embedding <=> $1::vector
+      LIMIT ${limiteCandidatosHnsw}
+    ) top_docs
+    LEFT JOIN "Chamado" c ON c.id = top_docs.chamado_id
     LEFT JOIN "Categoria" cat_c ON cat_c.id = c.categoria_id
-    LEFT JOIN "Artigo" a ON a.id = d.artigo_id
-    LEFT JOIN "Categoria" cat_a ON cat_a.id = a.categoria_id
-    WHERE ${condicoesWhere.join(' AND ')}
-    ORDER BY d.embedding <=> $1
-    LIMIT $2
+    ${joinArtigoSql}
+    ${clausulaWhereSql}
   `;
 
-  try {
-    const { rows } = await client.query<BuscaSimilarQueryRow>(sql, valoresSql);
+  const { rows } = await pool.query<BuscaSimilarQueryRow>(sql, valoresSql);
 
-    return rows.map((row): DocumentoSimilar => ({
-      id: row.id,
-      conteudo: row.conteudo,
-      metadata: row.metadata,
-      chamado_id: row.chamado_id,
-      artigo_id: row.artigo_id,
-      similaridade: Number(row.similaridade),
-      chamado:
-        row.chamado_id !== null &&
-        row.chamado_titulo !== null &&
-        row.chamado_descricao !== null &&
-        row.chamado_status !== null &&
-        row.chamado_prioridade !== null &&
-        row.chamado_categoria_id !== null
-          ? {
-              id: row.chamado_id,
-              titulo: row.chamado_titulo,
-              descricao: row.chamado_descricao,
-              status: row.chamado_status,
-              prioridade: row.chamado_prioridade,
-              solucao: row.chamado_solucao,
-              resolvidoEm: row.chamado_resolvido_em,
-              categoriaId: row.chamado_categoria_id,
-              categoriaNome: row.chamado_categoria_nome ?? '',
-            }
-          : null,
-      artigo:
-        row.artigo_id !== null &&
-        row.artigo_titulo !== null &&
-        row.artigo_conteudo !== null &&
-        row.artigo_categoria_id !== null
-          ? {
-              id: row.artigo_id,
-              titulo: row.artigo_titulo,
-              conteudo: row.artigo_conteudo,
-              categoriaId: row.artigo_categoria_id,
-              categoriaNome: row.artigo_categoria_nome ?? '',
-            }
-          : null,
-    }));
-  } finally {
-    client.release();
-  }
+  const filtrados = rows
+    .filter((row) => {
+      if (Number(row.similaridade) < limiar) {
+        return false;
+      }
+      if (filtros.apenasChamados && row.chamado_id === null) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => Number(b.similaridade) - Number(a.similaridade));
+
+  return filtrados.slice(0, kSeguro).map((row): DocumentoSimilar => ({
+    id: row.id,
+    conteudo: row.conteudo,
+    metadata: row.metadata,
+    chamado_id: row.chamado_id,
+    artigo_id: row.artigo_id,
+    similaridade: Number(row.similaridade),
+    chamado:
+      row.chamado_id !== null &&
+      row.chamado_titulo !== null &&
+      row.chamado_descricao !== null &&
+      row.chamado_status !== null &&
+      row.chamado_prioridade !== null &&
+      row.chamado_categoria_id !== null
+        ? {
+            id: row.chamado_id,
+            titulo: row.chamado_titulo,
+            descricao: row.chamado_descricao,
+            status: row.chamado_status,
+            prioridade: row.chamado_prioridade,
+            solucao: row.chamado_solucao,
+            resolvidoEm: row.chamado_resolvido_em,
+            categoriaId: row.chamado_categoria_id,
+            categoriaNome: row.chamado_categoria_nome ?? '',
+          }
+        : null,
+    artigo:
+      row.artigo_id !== null &&
+      row.artigo_titulo !== null &&
+      row.artigo_conteudo !== null &&
+      row.artigo_categoria_id !== null
+        ? {
+            id: row.artigo_id,
+            titulo: row.artigo_titulo,
+            conteudo: row.artigo_conteudo,
+            categoriaId: row.artigo_categoria_id,
+            categoriaNome: row.artigo_categoria_nome ?? '',
+          }
+        : null,
+  }));
 }
 
 /**

@@ -6,12 +6,17 @@ export const pool = new Pool({
   connectionString: env.DATABASE_URL,
 });
 
+const clientesComVetorRegistrado = new WeakSet<PoolClient>();
+
 /**
- * Retorna um cliente pg já com o tipo VECTOR registrado.
+ * Retorna um cliente pg já com o tipo VECTOR registrado (com cache por conexão do pool).
  */
 export async function clienteComVetor(): Promise<PoolClient> {
   const client = await pool.connect();
-  await pgvector.registerTypes(client);
+  if (!clientesComVetorRegistrado.has(client)) {
+    await pgvector.registerTypes(client);
+    clientesComVetorRegistrado.add(client);
+  }
   return client;
 }
 
