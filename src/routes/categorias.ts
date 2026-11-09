@@ -1,27 +1,39 @@
+import { Router, type Request, type Response } from 'express';
+import { z } from 'zod';
 import { prisma, type Categoria } from '../config/prisma';
-import { validarCamposObrigatorios } from '../middlewares/validacao';
+import { validarBody } from '../middlewares/validacao';
 
-export interface CriarCategoriaRequest {
-  nome: string;
-  descricao?: string | null;
-  ativa?: boolean;
-  [chave: string]: unknown;
-}
+export const criarCategoriaSchema = z.object({
+  nome: z.string().trim().min(1, 'O nome da categoria é obrigatório.'),
+  descricao: z.string().trim().nullable().optional(),
+  ativa: z.boolean().optional(),
+});
 
-export interface CategoriaResponse {
-  dados: Categoria | Categoria[];
-}
+export type CriarCategoriaRequest = z.infer<typeof criarCategoriaSchema>;
 
-export async function handleListarCategorias(): Promise<CategoriaResponse> {
-  const categorias = await prisma.categoria.findMany({
-    orderBy: { nome: 'asc' },
+export const categoriasRouter = Router();
+
+categoriasRouter.get('/', async (_req: Request, res: Response): Promise<void> => {
+  const categorias: Categoria[] = await prisma.categoria.findMany({
+    orderBy: { id: 'asc' },
   });
-  return { dados: categorias };
-}
+  res.status(200).json(categorias);
+});
 
-export function validarPayloadCriarCategoria(payload: unknown): CriarCategoriaRequest {
-  return validarCamposObrigatorios<CriarCategoriaRequest>(payload, [
-    { campo: 'nome', obrigatorio: true, tipo: 'string' },
-  ]);
-}
+categoriasRouter.post(
+  '/',
+  validarBody(criarCategoriaSchema),
+  async (req: Request, res: Response): Promise<void> => {
+    const dados = req.body as CriarCategoriaRequest;
+    const novaCategoria: Categoria = await prisma.categoria.create({
+      data: {
+        nome: dados.nome,
+        descricao: dados.descricao ?? null,
+        ...(dados.ativa !== undefined ? { ativa: dados.ativa } : {}),
+      },
+    });
+    res.status(201).json(novaCategoria);
+  }
+);
 
+export default categoriasRouter;

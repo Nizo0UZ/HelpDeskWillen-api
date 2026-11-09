@@ -10,7 +10,8 @@
     "seed": "tsx src/seed.ts",
     "migrate": "prisma migrate dev",
     "studio": "prisma studio",
-    "reindex": "tsx src/services/embeddingService.ts"
+    "reindex": "tsx src/services/embeddingService.ts",
+    "test": "tsx --test src/chamados.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,12 +25,15 @@
     "@prisma/client": "^7.10.1",
     "bcrypt": "^6.0.0",
     "dotenv": "^18.0.9",
+    "express": "^5.3.0",
     "openai": "^7.52.0",
     "pg": "^8.23.1",
-    "pgvector": "^0.3.1"
+    "pgvector": "^0.3.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
+    "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
     "prisma": "^7.10.1",

@@ -5,7 +5,17 @@
 import pgvector from 'pgvector/pg';
 import { ai, EMBEDDING_DIMENSOES, EMBEDDING_MODEL } from '../config/gemini';
 import { clienteComVetor, encerrarPool } from '../config/pg';
-import { prisma, StatusChamado } from '../config/prisma';
+import { Prisma, prisma, StatusChamado } from '../config/prisma';
+
+export type GeradorEmbeddingFn = (texto: string) => Promise<number[]>;
+
+export interface DadosChamadoParaEmbedding {
+  id: number;
+  titulo: string;
+  descricao: string;
+  solucao?: string | null;
+  categoriaNome?: string;
+}
 
 export interface DocumentoMetadata {
   chamado_id?: number;
@@ -177,6 +187,47 @@ export async function inserirDocumento(
   } finally {
     client.release();
   }
+}
+
+/**
+ * Gera e persiste (ou atualiza) o embedding de um chamado dentro de uma transação
+ * interativa do Prisma (`tx`), garantindo atomicidade entre o registro relacional e o vetor.
+ */
+export async function salvarEmbeddingChamadoTx(
+  tx: Prisma.TransactionClient,
+  chamado: DadosChamadoParaEmbedding,
+  gerador: GeradorEmbeddingFn = gerarEmbedding
+): Promise<void> {
+  const partesConteudo = [
+    `[CHAMADO #${chamado.id}] ${chamado.titulo}`,
+    ...(chamado.categoriaNome ? [`Categoria: ${chamado.categoriaNome}`] : []),
+    `Problema: ${chamado.descricao}`,
+    ...(chamado.solucao ? [`Solução aplicada: ${chamado.solucao}`] : []),
+  ];
+  const conteudo = partesConteudo.join('\n');
+
+  const embedding = await gerador(conteudo);
+  const vetorSql = pgvector.toSql(embedding);
+
+  const metadata: DocumentoMetadata = {
+    chamado_id: chamado.id,
+    titulo: chamado.titulo,
+    ...(chamado.categoriaNome ? { categoria: chamado.categoriaNome } : {}),
+    origem: chamado.solucao ? 'chamado_resolvido' : 'chamado_aberto',
+  };
+
+  await tx.documentos.deleteMany({
+    where: { chamadoId: chamado.id },
+  });
+
+  await tx.$executeRawUnsafe(
+    `INSERT INTO "Documentos" (conteudo, metadata, embedding, chamado_id)
+     VALUES ($1, $2::jsonb, $3::vector, $4)`,
+    conteudo,
+    JSON.stringify(metadata),
+    vetorSql,
+    chamado.id
+  );
 }
 
 /**

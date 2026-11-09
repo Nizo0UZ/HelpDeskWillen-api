@@ -1,31 +1,41 @@
+import { Router, type Request, type Response } from 'express';
+import { z } from 'zod';
 import { prisma, type Artigo } from '../config/prisma';
-import { validarCamposObrigatorios } from '../middlewares/validacao';
+import { validarBody } from '../middlewares/validacao';
 
-export interface CriarArtigoRequest {
-  titulo: string;
-  conteudo: string;
-  autorId: number;
-  categoriaId: number;
-  [chave: string]: unknown;
-}
+export const criarArtigoSchema = z.object({
+  titulo: z.string().trim().min(1, 'O título do artigo é obrigatório.'),
+  conteudo: z.string().trim().min(1, 'O conteúdo do artigo é obrigatório.'),
+  autorId: z.number().int().positive('O ID do autor deve ser um inteiro positivo.'),
+  categoriaId: z.number().int().positive('O ID da categoria deve ser um inteiro positivo.'),
+});
 
-export interface ArtigoResponse {
-  dados: Artigo | Artigo[];
-}
+export type CriarArtigoRequest = z.infer<typeof criarArtigoSchema>;
 
-export async function handleListarArtigos(): Promise<ArtigoResponse> {
-  const artigos = await prisma.artigo.findMany({
+export const artigosRouter = Router();
+
+artigosRouter.get('/', async (_req: Request, res: Response): Promise<void> => {
+  const artigos: Artigo[] = await prisma.artigo.findMany({
     orderBy: { criadoEm: 'desc' },
   });
-  return { dados: artigos };
-}
+  res.status(200).json(artigos);
+});
 
-export function validarPayloadCriarArtigo(payload: unknown): CriarArtigoRequest {
-  return validarCamposObrigatorios<CriarArtigoRequest>(payload, [
-    { campo: 'titulo', obrigatorio: true, tipo: 'string' },
-    { campo: 'conteudo', obrigatorio: true, tipo: 'string' },
-    { campo: 'autorId', obrigatorio: true, tipo: 'number' },
-    { campo: 'categoriaId', obrigatorio: true, tipo: 'number' },
-  ]);
-}
+artigosRouter.post(
+  '/',
+  validarBody(criarArtigoSchema),
+  async (req: Request, res: Response): Promise<void> => {
+    const dados = req.body as CriarArtigoRequest;
+    const novoArtigo: Artigo = await prisma.artigo.create({
+      data: {
+        titulo: dados.titulo,
+        conteudo: dados.conteudo,
+        autorId: dados.autorId,
+        categoriaId: dados.categoriaId,
+      },
+    });
+    res.status(201).json(novoArtigo);
+  }
+);
 
+export default artigosRouter;
