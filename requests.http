@@ -1,0 +1,324 @@
+# ============================================================================
+# Smart-Base Helpdesk — Roteiro de Testes da API REST (REST Client / HTTP)
+# ============================================================================
+# Como usar no VS Code / Cursor / Antigravity:
+#   1. Instale a extensão "REST Client" (humao.rest-client).
+#   2. Certifique-se de que o servidor está rodando (`npm run dev`).
+#   3. Clique em "Send Request" acima de qualquer bloco `###`.
+#
+# Observação sobre IDs:
+#   - Após rodar `node src/seed.js`, as sequências são reiniciadas em 1:
+#     * Categorias: IDs 1 a 10
+#     * Usuários ADMIN: IDs 1 a 3
+#     * Usuários ATENDENTE: IDs 4 a 15
+#     * Usuários SOLICITANTE: IDs 16 a 50
+#     * Chamados realistas de TI (RESOLVIDO): IDs 1 a 40
+#     * Artigos da Base de Conhecimento: IDs 1 a 20
+#   - As requisições nomeadas (`# @name ...`) capturam automaticamente o ID
+#     retornado pela API para uso nas requisições subsequentes!
+# ============================================================================
+
+@baseUrl = http://localhost:3000
+@contentType = application/json
+
+# Variáveis padrão (também extraídas dinamicamente nas requisições @name abaixo)
+@categoriaId = 1
+@adminId = 1
+@atendenteId = 4
+@solicitanteId = 16
+@chamadoId = 1
+
+
+# ============================================================================
+# 1. CATEGORIAS (/categorias)
+# ============================================================================
+
+### 1.1 Listar todas as categorias (captura a primeira categoria dinamicamente)
+# @name listarCategorias
+GET {{baseUrl}}/categorias
+Accept: {{contentType}}
+
+### 1.2 Criar uma nova categoria de TI
+# @name criarCategoria
+POST {{baseUrl}}/categorias
+Content-Type: {{contentType}}
+
+{
+  "nome": "Telefonia VoIP e PABX IP",
+  "descricao": "Ramais SIP, headsets corporativos, URA de atendimento e troncos digitais.",
+  "ativa": true
+}
+
+### 1.3 [Validação P2002 -> 409 Conflict] Tentar criar categoria com nome duplicado
+POST {{baseUrl}}/categorias
+Content-Type: {{contentType}}
+
+{
+  "nome": "Telefonia VoIP e PABX IP",
+  "descricao": "Tentativa duplicada para testar tratamento do erro P2002 do Prisma."
+}
+
+
+# ============================================================================
+# 2. USUÁRIOS (/usuarios)
+# ============================================================================
+
+### 2.1 Listar todos os usuários (verifica omissão do campo 'senha' no retorno)
+# @name listarUsuarios
+GET {{baseUrl}}/usuarios
+Accept: {{contentType}}
+
+### 2.2 Cadastrar novo usuário SOLICITANTE (senha armazenada com hash bcrypt)
+# @name criarSolicitante
+POST {{baseUrl}}/usuarios
+Content-Type: {{contentType}}
+
+{
+  "nome": "Prof. Avaliador Solicitante",
+  "email": "avaliador.solicitante@willen.com.br",
+  "senha": "SenhaSegura@2026",
+  "papel": "SOLICITANTE",
+  "ativo": true
+}
+
+### 2.3 Cadastrar novo usuário ATENDENTE
+# @name criarAtendente
+POST {{baseUrl}}/usuarios
+Content-Type: {{contentType}}
+
+{
+  "nome": "Analista N2 Suporte Willen",
+  "email": "analista.n2@willen.com.br",
+  "senha": "SuporteN2@2026",
+  "papel": "ATENDENTE",
+  "ativo": true
+}
+
+### 2.4 [Validação Zod -> 400 Bad Request] E-mail inválido e senha curta
+POST {{baseUrl}}/usuarios
+Content-Type: {{contentType}}
+
+{
+  "nome": "Usuário Inválido",
+  "email": "email-invalido",
+  "senha": "123"
+}
+
+
+# ============================================================================
+# 3. CHAMADOS (/chamados) — TRILHA A (Relacional + Transações ACID)
+# ============================================================================
+
+### 3.1 Listar chamados com paginação padrão (página 1, limite 10)
+# @name listarChamados
+GET {{baseUrl}}/chamados?pagina=1&limite=10
+Accept: {{contentType}}
+
+### 3.2 Listar chamados usando filtro composto (status + categoriaId -> usa índice B-tree composto)
+GET {{baseUrl}}/chamados?status=RESOLVIDO&categoriaId={{listarCategorias.response.body.$[0].id}}&pagina=1&limite=5
+Accept: {{contentType}}
+
+### 3.3 Filtrar chamados por prioridade URGENTE e status ABERTO
+GET {{baseUrl}}/chamados?prioridade=URGENTE&status=ABERTO&pagina=1&limite=5
+Accept: {{contentType}}
+
+### 3.4 Detalhar um chamado específico (inclui categoria, solicitante, atendente, comentários e tags N:N)
+GET {{baseUrl}}/chamados/{{listarChamados.response.body.dados[0].id}}
+Accept: {{contentType}}
+
+### 3.5 Criar um novo chamado (cria registro relacional + gera embedding no pgvector + indexa no Elasticsearch)
+# @name novoChamado
+POST {{baseUrl}}/chamados
+Content-Type: {{contentType}}
+
+{
+  "titulo": "VPN FortiClient desconecta ao travar em 40% no Windows 11",
+  "descricao": "Ao tentar conectar na VPN corporativa de casa pelo FortiClient, a barra de progresso para em 40% e exibe erro de validação de certificado TLS.",
+  "categoriaId": {{listarCategorias.response.body.$[0].id}},
+  "solicitanteId": {{criarSolicitante.response.body.id}},
+  "prioridade": "ALTA"
+}
+
+### 3.6 Adicionar comentário ao histórico do chamado recém-criado
+POST {{baseUrl}}/chamados/{{novoChamado.response.body.id}}/comentarios
+Content-Type: {{contentType}}
+
+{
+  "autorId": {{criarSolicitante.response.body.id}},
+  "conteudo": "Testei reiniciar o roteador doméstico e o erro persiste exatamente em 40%."
+}
+
+### 3.7 Atualizar status do chamado para EM_ANDAMENTO atribuindo um ATENDENTE
+PATCH {{baseUrl}}/chamados/{{novoChamado.response.body.id}}/status
+Content-Type: {{contentType}}
+
+{
+  "status": "EM_ANDAMENTO",
+  "atendenteId": {{criarAtendente.response.body.id}},
+  "autorId": {{criarAtendente.response.body.id}},
+  "comentario": "Chamado assumido pela equipe de infraestrutura N2. Verificando cadeia de certificados ICP-Brasil/CA interna."
+}
+
+### 3.8 Resolver o chamado (Transação composta: atualiza status + grava solução + cria comentário + reindexa vetor no pgvector)
+PATCH {{baseUrl}}/chamados/{{novoChamado.response.body.id}}/status
+Content-Type: {{contentType}}
+
+{
+  "status": "RESOLVIDO",
+  "atendenteId": {{criarAtendente.response.body.id}},
+  "autorId": {{criarAtendente.response.body.id}},
+  "solucao": "Importado o certificado raiz da CA corporativa no repositório de Autoridades de Certificação Raiz Confiáveis do Windows (certlm.msc), desativado o protocolo TLS 1.3 experimental nas opções de Internet e reconectado o FortiClient com sucesso.",
+  "comentario": "Acesso VPN restabelecido e validado em sessão remota com o usuário."
+}
+
+### 3.9 Conferir o chamado resolvido com histórico completo de comentários e data resolvidoEm
+GET {{baseUrl}}/chamados/{{novoChamado.response.body.id}}
+Accept: {{contentType}}
+
+
+# ============================================================================
+# 4. VALIDAÇÕES TRANSACIONAIS E REGRAS DE NEGÓCIO (TRILHA A)
+# ============================================================================
+
+### 4.1 [Regra de Negócio -> 400 Bad Request] Tentar resolver chamado SEM informar o campo "solucao"
+PATCH {{baseUrl}}/chamados/{{novoChamado.response.body.id}}/status
+Content-Type: {{contentType}}
+
+{
+  "status": "RESOLVIDO"
+}
+
+### 4.2 [Regra de Negócio -> 400 Bad Request] Tentar atribuir um usuário SOLICITANTE como atendente do chamado
+PATCH {{baseUrl}}/chamados/{{novoChamado.response.body.id}}/status
+Content-Type: {{contentType}}
+
+{
+  "status": "EM_ANDAMENTO",
+  "atendenteId": {{criarSolicitante.response.body.id}}
+}
+
+### 4.3 Fechar o chamado definitivamente (status -> FECHADO)
+PATCH {{baseUrl}}/chamados/{{novoChamado.response.body.id}}/status
+Content-Type: {{contentType}}
+
+{
+  "status": "FECHADO",
+  "autorId": {{criarAtendente.response.body.id}},
+  "comentario": "Chamado encerrado após confirmação final do solicitante."
+}
+
+### 4.4 [Regra de Negócio -> 400 Bad Request] Tentar reabrir um chamado que já está FECHADO
+PATCH {{baseUrl}}/chamados/{{novoChamado.response.body.id}}/status
+Content-Type: {{contentType}}
+
+{
+  "status": "ABERTO",
+  "autorId": {{criarSolicitante.response.body.id}},
+  "comentario": "Tentativa inválida de reabrir um chamado fechado."
+}
+
+
+# ============================================================================
+# 5. ARTIGOS DA BASE DE CONHECIMENTO (/artigos)
+# ============================================================================
+
+### 5.1 Listar todos os artigos da base de conhecimento
+GET {{baseUrl}}/artigos
+Accept: {{contentType}}
+
+### 5.2 Publicar um novo artigo na base de conhecimento
+POST {{baseUrl}}/artigos
+Content-Type: {{contentType}}
+
+{
+  "titulo": "Procedimento de Correção: VPN FortiClient travando em 40% (Erro de Certificado)",
+  "conteudo": "1. Abra o gerenciador de certificados do computador local (certlm.msc).\n2. Importe o certificado da Autoridade Certificadora (CA) Corporativa em Autoridades de Certificação Raiz Confiáveis.\n3. Em Opções da Internet -> Avançadas, mantenha TLS 1.2 habilitado.\n4. Reinicie o serviço FortiClient Service Scheduler e refaça o login.",
+  "autorId": {{criarAtendente.response.body.id}},
+  "categoriaId": {{listarCategorias.response.body.$[0].id}}
+}
+
+
+# ============================================================================
+# 6. BUSCA SEMÂNTICA COM PGVECTOR (/busca/semantica) — TRILHA C
+# ============================================================================
+
+### 6.1 Busca semântica por sinônimo / linguagem natural ("esqueci minha credencial" -> encontra "senha de rede")
+GET {{baseUrl}}/busca/semantica?q=nao%20consigo%20entrar%20no%20notebook%20porque%20esqueci%20minha%20credencial&k=5
+Accept: {{contentType}}
+
+### 6.2 Busca semântica combinada com filtro relacional SQL (apenas chamados RESOLVIDO)
+GET {{baseUrl}}/busca/semantica?q=vpn%20forticlient%20trava%20em%2040%20por%20cento%20erro%20certificado&k=5&status=RESOLVIDO&limiar=0.65
+Accept: {{contentType}}
+
+### 6.3 Busca semântica incluindo também Artigos da Base de Conhecimento (incluirArtigos=true)
+GET {{baseUrl}}/busca/semantica?q=impressora%20manchando%20folha%20e%20atolando%20papel%20na%20bandeja&k=5&incluirArtigos=true&limiar=0.60
+Accept: {{contentType}}
+
+### 6.4 Busca semântica para incidente de BitLocker (tela azul pedindo chave de 48 dígitos)
+GET {{baseUrl}}/busca/semantica?q=tela%20azul%20bitlocker%20pedindo%20chave%20de%20recuperacao%20de%2048%20digitos&k=5
+Accept: {{contentType}}
+
+
+# ============================================================================
+# 7. BUSCA FULL-TEXT NO ELASTICSEARCH (/busca/texto) — TRILHA B
+# ============================================================================
+
+### 7.1 Busca textual com erro de digitação proposital ("impresora" -> tolerado via fuzziness: AUTO + highlight <mark>)
+GET {{baseUrl}}/busca/texto?q=impresora%20atolando%20papel%20na%20bandeja&k=5
+Accept: {{contentType}}
+
+### 7.2 Busca textual filtrada por status RESOLVIDO
+GET {{baseUrl}}/busca/texto?q=vpn%20forticlient%20certificado&k=5&status=RESOLVIDO
+Accept: {{contentType}}
+
+
+# ============================================================================
+# 8. COMPARATIVO LADO A LADO (/busca/comparar): ILIKE x Elasticsearch x pgvector
+# ============================================================================
+
+### 8.1 Comparar motores em busca com erro de digitação ("impresora atolando papel")
+# Observe que o ILIKE retorna 0 resultados, enquanto Elasticsearch (fuzzy) e pgvector (semântico) recuperam o chamado correto!
+GET {{baseUrl}}/busca/comparar?q=impresora%20atolando%20papel&k=3
+Accept: {{contentType}}
+
+### 8.2 Comparar motores em busca por sinônimo ("esqueci minha credencial")
+# Observe que o pgvector entende que "credencial" equivale a "senha de rede" no login do notebook!
+GET {{baseUrl}}/busca/comparar?q=nao%20consigo%20entrar%20no%20notebook%20porque%20esqueci%20minha%20credencial&k=3
+Accept: {{contentType}}
+
+
+# ============================================================================
+# 9. GERAÇÃO AUMENTADA POR RECUPERAÇÃO — RAG (/rag/perguntar) — TRILHA C
+# ============================================================================
+
+### 9.1 Perguntar ao assistente RAG sobre problema de VPN FortiClient travando em 40%
+POST {{baseUrl}}/rag/perguntar
+Content-Type: {{contentType}}
+
+{
+  "pergunta": "Minha VPN FortiClient trava em 40% quando tento conectar de casa e dá erro de certificado. Como resolver?",
+  "k": 5,
+  "status": "RESOLVIDO",
+  "limiar": 0.65
+}
+
+### 9.2 Perguntar ao assistente RAG sobre bloqueio de BitLocker (chave de 48 dígitos após atualizar BIOS)
+POST {{baseUrl}}/rag/perguntar
+Content-Type: {{contentType}}
+
+{
+  "pergunta": "O notebook atualizou o firmware da BIOS Dell e agora exige uma chave de recuperação do BitLocker de 48 dígitos ao ligar. Qual é o procedimento?",
+  "k": 5,
+  "limiar": 0.65
+}
+
+### 9.3 Perguntar ao assistente RAG sobre impressora puxando várias folhas e manchando o papel
+POST {{baseUrl}}/rag/perguntar
+Content-Type: {{contentType}}
+
+{
+  "pergunta": "A impressora laser do andar está soltando manchas verticais pretas no papel e atolando na bandeja 2. O que a equipe técnica deve fazer?",
+  "k": 5,
+  "limiar": 0.65
+}
+

@@ -1,11 +1,13 @@
 import { fakerPT_BR as faker } from '@faker-js/faker';
 import bcrypt from 'bcrypt';
+import { elasticClient } from './config/elastic';
 import {
   PapelUsuario,
   PrioridadeChamado,
   prisma,
   StatusChamado,
 } from './config/prisma';
+import { sincronizarTodosChamadosBulk } from './services/buscaService';
 import {
   encerrar as encerrarEmbeddings,
   reindexarBaseSemantica,
@@ -782,6 +784,13 @@ export async function executarSeed(opcoes?: {
     prisma.tag.deleteMany(),
     prisma.usuario.deleteMany(),
     prisma.categoria.deleteMany(),
+    prisma.$executeRawUnsafe('ALTER SEQUENCE "Documentos_id_seq" RESTART WITH 1'),
+    prisma.$executeRawUnsafe('ALTER SEQUENCE "Comentario_id_seq" RESTART WITH 1'),
+    prisma.$executeRawUnsafe('ALTER SEQUENCE "Chamado_id_seq" RESTART WITH 1'),
+    prisma.$executeRawUnsafe('ALTER SEQUENCE "Artigo_id_seq" RESTART WITH 1'),
+    prisma.$executeRawUnsafe('ALTER SEQUENCE "Tag_id_seq" RESTART WITH 1'),
+    prisma.$executeRawUnsafe('ALTER SEQUENCE "Usuario_id_seq" RESTART WITH 1'),
+    prisma.$executeRawUnsafe('ALTER SEQUENCE "Categoria_id_seq" RESTART WITH 1'),
   ]);
 
   // -------------------------------------------------------------------------
@@ -1151,6 +1160,23 @@ export async function executarSeed(opcoes?: {
     }
   }
 
+  try {
+    console.log('\n🔎 Sincronizando chamados com o Elasticsearch (Bulk API)...');
+    const resumoElastic = await sincronizarTodosChamadosBulk({
+      recriarIndice: true,
+      tamanhoLote: 1000,
+    });
+    console.log(
+      `✅ Elasticsearch sincronizado: ${resumoElastic.totalIndexados}/${resumoElastic.totalLidos} chamados no índice "${resumoElastic.indice}" (${resumoElastic.tempoMs}ms).`
+    );
+  } catch (erroElastic: unknown) {
+    const msg =
+      erroElastic instanceof Error ? erroElastic.message : String(erroElastic);
+    console.warn(
+      `⚠️ Não foi possível sincronizar com o Elasticsearch durante o seed (${msg}). Você pode rodar "npm run sync:elastic" separadamente.`
+    );
+  }
+
   return {
     categorias: categoriasCriadas.length,
     tags: tagsCriadas.length,
@@ -1164,27 +1190,29 @@ export async function executarSeed(opcoes?: {
   };
 }
 
-if (require.main === module) {
-  executarSeed()
-    .then((resumo: ResumoSeed) => {
-      console.log('\n✅ Seed finalizado com sucesso!');
-      console.table({
-        Categorias: resumo.categorias,
-        Tags: resumo.tags,
-        Usuarios: resumo.usuarios,
-        Artigos: resumo.artigos,
-        'Chamados (Total)': resumo.chamados,
-        'Chamados (Realistas à mão)': resumo.chamadosRealistas,
-        Comentarios: resumo.comentarios,
-        'Vínculos ChamadoTag': resumo.chamadoTags,
-        'Documentos Indexados (pgvector)': resumo.embeddings?.totalDocumentos ?? 0,
-      });
-    })
-    .catch((erro: unknown) => {
-      console.error('❌ Falha ao executar seed:', erro);
-      process.exitCode = 1;
-    })
-    .finally(async () => {
-      await encerrarEmbeddings();
+export async function executarSeedCli(): Promise<void> {
+  try {
+    const resumo: ResumoSeed = await executarSeed();
+    console.log('\n✅ Seed finalizado com sucesso!');
+    console.table({
+      Categorias: resumo.categorias,
+      Tags: resumo.tags,
+      Usuarios: resumo.usuarios,
+      Artigos: resumo.artigos,
+      'Chamados (Total)': resumo.chamados,
+      'Chamados (Realistas à mão)': resumo.chamadosRealistas,
+      Comentarios: resumo.comentarios,
+      'Vínculos ChamadoTag': resumo.chamadoTags,
+      'Documentos Indexados (pgvector)': resumo.embeddings?.totalDocumentos ?? 0,
     });
+  } catch (erro: unknown) {
+    console.error('❌ Falha ao executar seed:', erro);
+    process.exitCode = 1;
+  } finally {
+    await Promise.allSettled([encerrarEmbeddings(), elasticClient.close()]);
+  }
+}
+
+if (require.main === module) {
+  void executarSeedCli();
 }

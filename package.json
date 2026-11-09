@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "description": "",
   "main": "dist/src/server.js",
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
+    "postinstall": "prisma generate",
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/src/server.js",
