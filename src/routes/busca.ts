@@ -1,34 +1,99 @@
-import { prisma } from '../config/prisma';
+import { Router, type Request, type Response } from 'express';
+import { z } from 'zod';
+import { LIMIAR_SIMILARIDADE_PADRAO } from '../config/gemini';
+import { StatusChamado } from '../config/prisma';
+import { validarBody, validarDados } from '../middlewares/validacao';
 import { buscarPorSimilaridade } from '../services/buscaService';
-import type { DocumentoSimilar } from '../services/embeddingService';
-import { recuperarContextoRag, type RespostaRagOutput } from '../services/ragService';
+import { perguntarRag } from '../services/ragService';
 
-export interface BuscaSemanticaQuery {
-  q: string;
-  k?: number;
-}
+export const buscaSemanticaQuerySchema = z.object({
+  q: z.string().trim().min(1, 'O parâmetro de busca "q" é obrigatório.'),
+  k: z.coerce.number().int().positive().max(50).optional().default(5),
+  status: z
+    .enum([
+      StatusChamado.ABERTO,
+      StatusChamado.EM_ANDAMENTO,
+      StatusChamado.AGUARDANDO,
+      StatusChamado.RESOLVIDO,
+      StatusChamado.FECHADO,
+    ])
+    .optional(),
+  categoria: z.union([z.string(), z.number()]).optional(),
+  categoriaId: z.coerce.number().int().positive().optional(),
+  limiar: z.coerce
+    .number()
+    .min(0, 'O limiar deve ser entre 0 e 1.')
+    .max(1, 'O limiar deve ser entre 0 e 1.')
+    .optional()
+    .default(LIMIAR_SIMILARIDADE_PADRAO),
+  incluirArtigos: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
+});
 
-export interface BuscaSemanticaResponse {
-  resultados: DocumentoSimilar[];
-}
+export const ragPerguntarBodySchema = z.object({
+  pergunta: z.string().trim().min(1, 'O campo "pergunta" é obrigatório.'),
+  k: z.number().int().positive().max(20).optional().default(5),
+  status: z
+    .enum([
+      StatusChamado.ABERTO,
+      StatusChamado.EM_ANDAMENTO,
+      StatusChamado.AGUARDANDO,
+      StatusChamado.RESOLVIDO,
+      StatusChamado.FECHADO,
+    ])
+    .optional(),
+  categoria: z.union([z.string(), z.number()]).optional(),
+  categoriaId: z.number().int().positive().optional(),
+  limiar: z
+    .number()
+    .min(0, 'O limiar deve ser entre 0 e 1.')
+    .max(1, 'O limiar deve ser entre 0 e 1.')
+    .optional()
+    .default(LIMIAR_SIMILARIDADE_PADRAO),
+});
 
-export async function handleBuscaSemantica(
-  query: BuscaSemanticaQuery
-): Promise<BuscaSemanticaResponse> {
-  void prisma;
-  const resultados = await buscarPorSimilaridade({
-    query: query.q,
-    limite: query.k ?? 5,
-  });
-  return { resultados };
-}
+export type BuscaSemanticaQuery = z.infer<typeof buscaSemanticaQuerySchema>;
+export type RagPerguntarRequest = z.infer<typeof ragPerguntarBodySchema>;
 
-export async function handlePerguntaRag(
-  query: BuscaSemanticaQuery
-): Promise<RespostaRagOutput> {
-  return recuperarContextoRag({
-    pergunta: query.q,
-    k: query.k ?? 5,
-  });
-}
+export const buscaRouter = Router();
+export const ragRouter = Router();
 
+buscaRouter.get(
+  '/semantica',
+  async (req: Request, res: Response): Promise<void> => {
+    const query = validarDados(buscaSemanticaQuerySchema, req.query);
+    const resultado = await buscarPorSimilaridade({
+      query: query.q,
+      k: query.k,
+      status: query.status,
+      categoria: query.categoria,
+      categoriaId: query.categoriaId,
+      limiar: query.limiar,
+      apenasChamados: !query.incluirArtigos,
+    });
+
+    res.status(200).json(resultado);
+  }
+);
+
+ragRouter.post(
+  '/perguntar',
+  validarBody(ragPerguntarBodySchema),
+  async (req: Request, res: Response): Promise<void> => {
+    const body = req.body as RagPerguntarRequest;
+    const resposta = await perguntarRag({
+      pergunta: body.pergunta,
+      k: body.k,
+      status: body.status,
+      categoria: body.categoria,
+      categoriaId: body.categoriaId,
+      limiar: body.limiar,
+    });
+
+    res.status(200).json(resposta);
+  }
+);
+
+export default buscaRouter;

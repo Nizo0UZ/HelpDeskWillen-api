@@ -1,6 +1,11 @@
 import { elasticClient, INDICE_CHAMADOS } from '../config/elastic';
-import { prisma } from '../config/prisma';
-import { buscarSimilares, type DocumentoSimilar } from './embeddingService';
+import { LIMIAR_SIMILARIDADE_PADRAO } from '../config/gemini';
+import type { StatusChamado } from '../config/prisma';
+import {
+  buscarSimilares,
+  type DocumentoSimilar,
+  type GeradorEmbeddingFn,
+} from './embeddingService';
 
 export interface DocumentoChamadoIndexado {
   titulo: string;
@@ -9,17 +14,58 @@ export interface DocumentoChamadoIndexado {
 
 export interface ParametrosBuscaSemantica {
   query: string;
-  limite?: number;
+  k?: number;
+  status?: StatusChamado;
+  categoria?: string | number;
+  categoriaId?: number;
+  limiar?: number;
+  apenasChamados?: boolean;
+  geradorEmbedding?: GeradorEmbeddingFn;
+}
+
+export interface ResultadoBuscaSemantica {
+  query: string;
+  k: number;
+  limiar: number;
+  filtros: {
+    status: StatusChamado | null;
+    categoria: string | number | null;
+  };
+  total: number;
+  resultados: DocumentoSimilar[];
 }
 
 /**
- * Executa busca semântica via pgvector delegando ao embeddingService.
+ * Executa busca semântica via pgvector combinada com filtros relacionais (status, categoria)
+ * e limiar mínimo de similaridade.
  */
 export async function buscarPorSimilaridade(
   params: ParametrosBuscaSemantica
-): Promise<DocumentoSimilar[]> {
-  void prisma;
-  return buscarSimilares(params.query, params.limite ?? 5);
+): Promise<ResultadoBuscaSemantica> {
+  const k = params.k ?? 5;
+  const limiar = params.limiar ?? LIMIAR_SIMILARIDADE_PADRAO;
+  const apenasChamados = params.apenasChamados ?? true;
+
+  const resultados = await buscarSimilares(params.query, k, {
+    status: params.status,
+    categoria: params.categoria,
+    categoriaId: params.categoriaId,
+    limiar,
+    apenasChamados,
+    geradorEmbedding: params.geradorEmbedding,
+  });
+
+  return {
+    query: params.query,
+    k,
+    limiar,
+    filtros: {
+      status: params.status ?? null,
+      categoria: params.categoriaId ?? params.categoria ?? null,
+    },
+    total: resultados.length,
+    resultados,
+  };
 }
 
 /**
@@ -38,4 +84,3 @@ export async function indexarChamadoNoElastic(
 
   return resposta.result;
 }
-

@@ -10,3 +10,16 @@ export const ai = new GoogleGenAI({
 export const EMBEDDING_MODEL = 'gemini-embedding-001' as const;
 export const EMBEDDING_DIMENSOES = 1536 as const;
 
+// Modelo generativo principal e fallbacks para a etapa "G" (Generation) do RAG
+export const GENERATION_MODEL =
+  process.env.GEMINI_MODEL || ('gemini-3.8-flash' as const);
+
+export const GENERATION_MODELS_FALLBACK: readonly string[] = [
+  GENERATION_MODEL,
+  'gemini-3.7-flash',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
+];
+
+// Limiar mínimo de similaridade de cosseno (0 a 1) para descartar resultados irrelevantes
+export const LIMIAR_SIMILARIDADE_PADRAO = 0.55 as const;

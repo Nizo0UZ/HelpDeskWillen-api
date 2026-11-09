@@ -5,6 +5,7 @@ import { encerrarPool } from './config/pg';
 import { prisma } from './config/prisma';
 import { middlewareErros } from './middlewares/erros';
 import { artigosRouter } from './routes/artigos';
+import { buscaRouter, ragRouter } from './routes/busca';
 import { categoriasRouter } from './routes/categorias';
 import { chamadosRouter } from './routes/chamados';
 import { usuariosRouter } from './routes/usuarios';
@@ -18,6 +19,8 @@ export function criarApp(): Express {
   app.use('/usuarios', usuariosRouter);
   app.use('/chamados', chamadosRouter);
   app.use('/artigos', artigosRouter);
+  app.use('/busca', buscaRouter);
+  app.use('/rag', ragRouter);
 
   app.use(middlewareErros);
 

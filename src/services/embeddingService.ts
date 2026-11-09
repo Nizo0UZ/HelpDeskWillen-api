@@ -1,13 +1,29 @@
 // src/services/embeddingService.ts
 // Serviço para gerar e armazenar embeddings no PostgreSQL via pgvector.
-// Usa a API do Google Gemini (gratuita) para gerar os embeddings individuais e em lote (batchEmbedContents).
+// Usa a API do Google Gemini para gerar embeddings com taskType específico
+// (RETRIEVAL_DOCUMENT para indexação e RETRIEVAL_QUERY para busca).
 
 import pgvector from 'pgvector/pg';
-import { ai, EMBEDDING_DIMENSOES, EMBEDDING_MODEL } from '../config/gemini';
+import {
+  ai,
+  EMBEDDING_DIMENSOES,
+  EMBEDDING_MODEL,
+  LIMIAR_SIMILARIDADE_PADRAO,
+} from '../config/gemini';
 import { clienteComVetor, encerrarPool } from '../config/pg';
-import { Prisma, prisma, StatusChamado } from '../config/prisma';
+import {
+  PrioridadeChamado,
+  Prisma,
+  prisma,
+  StatusChamado,
+} from '../config/prisma';
 
-export type GeradorEmbeddingFn = (texto: string) => Promise<number[]>;
+export type TipoTarefaEmbedding = 'RETRIEVAL_DOCUMENT' | 'RETRIEVAL_QUERY';
+
+export type GeradorEmbeddingFn = (
+  texto: string,
+  taskType?: TipoTarefaEmbedding
+) => Promise<number[]>;
 
 export interface DadosChamadoParaEmbedding {
   id: number;
@@ -26,6 +42,26 @@ export interface DocumentoMetadata {
   [chave: string]: string | number | boolean | null | undefined;
 }
 
+export interface ChamadoRelacionadoBusca {
+  id: number;
+  titulo: string;
+  descricao: string;
+  status: StatusChamado;
+  prioridade: PrioridadeChamado;
+  solucao: string | null;
+  resolvidoEm: Date | null;
+  categoriaId: number;
+  categoriaNome: string;
+}
+
+export interface ArtigoRelacionadoBusca {
+  id: number;
+  titulo: string;
+  conteudo: string;
+  categoriaId: number;
+  categoriaNome: string;
+}
+
 export interface DocumentoSimilar {
   id: number;
   conteudo: string;
@@ -33,6 +69,17 @@ export interface DocumentoSimilar {
   chamado_id: number | null;
   artigo_id: number | null;
   similaridade: number;
+  chamado: ChamadoRelacionadoBusca | null;
+  artigo: ArtigoRelacionadoBusca | null;
+}
+
+export interface FiltrosBuscaSemantica {
+  status?: StatusChamado;
+  categoria?: string | number;
+  categoriaId?: number;
+  limiar?: number;
+  apenasChamados?: boolean;
+  geradorEmbedding?: GeradorEmbeddingFn;
 }
 
 export interface NovoDocumentoInput {
@@ -64,6 +111,27 @@ interface InsercaoRow {
   id: number;
 }
 
+interface BuscaSimilarQueryRow {
+  id: number;
+  conteudo: string;
+  metadata: DocumentoMetadata;
+  chamado_id: number | null;
+  artigo_id: number | null;
+  similaridade: number;
+  chamado_titulo: string | null;
+  chamado_descricao: string | null;
+  chamado_status: StatusChamado | null;
+  chamado_prioridade: PrioridadeChamado | null;
+  chamado_solucao: string | null;
+  chamado_resolvido_em: Date | null;
+  chamado_categoria_id: number | null;
+  chamado_categoria_nome: string | null;
+  artigo_titulo: string | null;
+  artigo_conteudo: string | null;
+  artigo_categoria_id: number | null;
+  artigo_categoria_nome: string | null;
+}
+
 function aguardar(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -75,13 +143,20 @@ function aguardar(ms: number): Promise<void> {
 /**
  * Gera um embedding para o texto fornecido usando Google Gemini.
  * @param texto Texto de entrada
+ * @param taskType RETRIEVAL_DOCUMENT para indexar documentos; RETRIEVAL_QUERY para consultas
  * @returns Array de 1536 floats (gemini-embedding-001)
  */
-export async function gerarEmbedding(texto: string): Promise<number[]> {
+export async function gerarEmbedding(
+  texto: string,
+  taskType: TipoTarefaEmbedding = 'RETRIEVAL_DOCUMENT'
+): Promise<number[]> {
   const response = await ai.models.embedContent({
     model: EMBEDDING_MODEL,
     contents: texto.trim(),
-    config: { outputDimensionality: EMBEDDING_DIMENSOES },
+    config: {
+      outputDimensionality: EMBEDDING_DIMENSOES,
+      taskType,
+    },
   });
 
   const valores = response.embeddings?.[0]?.values;
@@ -94,11 +169,12 @@ export async function gerarEmbedding(texto: string): Promise<number[]> {
 
 /**
  * Gera embeddings para múltiplos textos em uma única chamada (:batchEmbedContents)
- * com tratamento de rate-limit (HTTP 429) para respeitar a cota gratuita do Gemini.
+ * usando taskType = RETRIEVAL_DOCUMENT por padrão e tratando rate-limit (HTTP 429).
  */
 export async function gerarEmbeddingsEmLote(
   textos: string[],
-  maxTentativas: number = 3
+  maxTentativas: number = 3,
+  taskType: TipoTarefaEmbedding = 'RETRIEVAL_DOCUMENT'
 ): Promise<number[][]> {
   if (textos.length === 0) {
     return [];
@@ -111,7 +187,10 @@ export async function gerarEmbeddingsEmLote(
       const response = await ai.models.embedContent({
         model: EMBEDDING_MODEL,
         contents: textosLimpos,
-        config: { outputDimensionality: EMBEDDING_DIMENSOES },
+        config: {
+          outputDimensionality: EMBEDDING_DIMENSOES,
+          taskType,
+        },
       });
 
       const listaEmbeddings = response.embeddings;
@@ -151,16 +230,13 @@ export async function gerarEmbeddingsEmLote(
 }
 
 /**
- * Insere um documento com seu embedding na tabela "Documentos".
- * @param conteudo Texto que será indexado
- * @param metadata Dados extras (ex.: { chamado_id: 1, categoria: 'Rede' })
- * @returns ID do registro inserido
+ * Insere um documento com seu embedding na tabela "Documentos" usando taskType RETRIEVAL_DOCUMENT.
  */
 export async function inserirDocumento(
   conteudo: string,
   metadata: DocumentoMetadata = {}
 ): Promise<number> {
-  const embedding = await gerarEmbedding(conteudo);
+  const embedding = await gerarEmbedding(conteudo, 'RETRIEVAL_DOCUMENT');
   const client = await clienteComVetor();
 
   const chamadoId =
@@ -191,7 +267,7 @@ export async function inserirDocumento(
 
 /**
  * Gera e persiste (ou atualiza) o embedding de um chamado dentro de uma transação
- * interativa do Prisma (`tx`), garantindo atomicidade entre o registro relacional e o vetor.
+ * interativa do Prisma (`tx`) usando taskType RETRIEVAL_DOCUMENT.
  */
 export async function salvarEmbeddingChamadoTx(
   tx: Prisma.TransactionClient,
@@ -206,7 +282,7 @@ export async function salvarEmbeddingChamadoTx(
   ];
   const conteudo = partesConteudo.join('\n');
 
-  const embedding = await gerador(conteudo);
+  const embedding = await gerador(conteudo, 'RETRIEVAL_DOCUMENT');
   const vetorSql = pgvector.toSql(embedding);
 
   const metadata: DocumentoMetadata = {
@@ -231,8 +307,8 @@ export async function salvarEmbeddingChamadoTx(
 }
 
 /**
- * Insere múltiplos documentos em lotes usando batchEmbedContents e um pequeno delay
- * entre cada lote para respeitar a cota gratuita do Gemini.
+ * Insere múltiplos documentos em lotes usando batchEmbedContents (RETRIEVAL_DOCUMENT)
+ * e um pequeno delay entre cada lote para respeitar a cota gratuita do Gemini.
  */
 export async function inserirDocumentosEmLote(
   documentos: NovoDocumentoInput[],
@@ -256,7 +332,11 @@ export async function inserirDocumentosEmLote(
       const lote = documentos.slice(i, i + tamanhoLote);
       const textos = lote.map((doc) => doc.conteudo);
 
-      const embeddings = await gerarEmbeddingsEmLote(textos, maxTentativas);
+      const embeddings = await gerarEmbeddingsEmLote(
+        textos,
+        maxTentativas,
+        'RETRIEVAL_DOCUMENT'
+      );
 
       await client.query('BEGIN');
       try {
@@ -305,7 +385,6 @@ export async function inserirDocumentosEmLote(
 
 /**
  * Reindexa artigos da base de conhecimento e chamados resolvidos na tabela "Documentos".
- * Respeita um limite de chamados para não estourar a cota gratuita do Gemini.
  */
 export async function reindexarBaseSemantica(
   opcoes: OpcoesReindexacao = {}
@@ -395,34 +474,124 @@ export async function reindexarBaseSemantica(
 }
 
 /**
- * Busca os K documentos mais similares à query usando distância de cosseno.
- * @param query Texto de busca
- * @param k Número máximo de resultados (padrão: 5)
- * @returns Lista de documentos similares ordenados pela menor distância de cosseno
+ * Busca os K documentos mais similares à query usando distância de cosseno (taskType = RETRIEVAL_QUERY),
+ * aplicando limiar mínimo de similaridade e filtros relacionais (status do chamado, categoria)
+ * diretamente no SQL via JOIN com "Chamado", "Artigo" e "Categoria".
  */
 export async function buscarSimilares(
   query: string,
-  k: number = 5
+  k: number = 5,
+  filtros: FiltrosBuscaSemantica = {}
 ): Promise<DocumentoSimilar[]> {
-  const embedding = await gerarEmbedding(query);
+  const gerador = filtros.geradorEmbedding ?? gerarEmbedding;
+  const embedding = await gerador(query, 'RETRIEVAL_QUERY');
   const client = await clienteComVetor();
 
+  const limiar = filtros.limiar ?? LIMIAR_SIMILARIDADE_PADRAO;
+  const valoresSql: unknown[] = [pgvector.toSql(embedding), k, limiar];
+  const condicoesWhere: string[] = ['(1 - (d.embedding <=> $1)) >= $3'];
+
+  if (filtros.apenasChamados) {
+    condicoesWhere.push('d.chamado_id IS NOT NULL');
+  }
+
+  if (filtros.status !== undefined) {
+    valoresSql.push(filtros.status);
+    const idx = valoresSql.length;
+    if (filtros.apenasChamados) {
+      condicoesWhere.push(`c.status::text = $${idx}`);
+    } else {
+      condicoesWhere.push(`(d.chamado_id IS NULL OR c.status::text = $${idx})`);
+    }
+  }
+
+  const filtroCategoria = filtros.categoriaId ?? filtros.categoria;
+  if (filtroCategoria !== undefined && filtroCategoria !== '') {
+    const numeroCat = Number(filtroCategoria);
+    if (!Number.isNaN(numeroCat) && Number.isInteger(numeroCat)) {
+      valoresSql.push(numeroCat);
+      const idx = valoresSql.length;
+      condicoesWhere.push(`COALESCE(c.categoria_id, a.categoria_id) = $${idx}`);
+    } else {
+      valoresSql.push(`%${String(filtroCategoria).trim()}%`);
+      const idx = valoresSql.length;
+      condicoesWhere.push(`COALESCE(cat_c.nome, cat_a.nome) ILIKE $${idx}`);
+    }
+  }
+
+  const sql = `
+    SELECT
+      d.id,
+      d.conteudo,
+      d.metadata,
+      d.chamado_id,
+      d.artigo_id,
+      (1 - (d.embedding <=> $1))::FLOAT AS similaridade,
+      c.titulo AS chamado_titulo,
+      c.descricao AS chamado_descricao,
+      c.status AS chamado_status,
+      c.prioridade AS chamado_prioridade,
+      c.solucao AS chamado_solucao,
+      c.resolvido_em AS chamado_resolvido_em,
+      c.categoria_id AS chamado_categoria_id,
+      cat_c.nome AS chamado_categoria_nome,
+      a.titulo AS artigo_titulo,
+      a.conteudo AS artigo_conteudo,
+      a.categoria_id AS artigo_categoria_id,
+      cat_a.nome AS artigo_categoria_nome
+    FROM "Documentos" d
+    LEFT JOIN "Chamado" c ON c.id = d.chamado_id
+    LEFT JOIN "Categoria" cat_c ON cat_c.id = c.categoria_id
+    LEFT JOIN "Artigo" a ON a.id = d.artigo_id
+    LEFT JOIN "Categoria" cat_a ON cat_a.id = a.categoria_id
+    WHERE ${condicoesWhere.join(' AND ')}
+    ORDER BY d.embedding <=> $1
+    LIMIT $2
+  `;
+
   try {
-    const { rows } = await client.query<DocumentoSimilar>(
-      `SELECT
-          id,
-          conteudo,
-          metadata,
-          chamado_id,
-          artigo_id,
-          -- 1 - distância_de_cosseno = similaridade (0 a 1)
-          (1 - (embedding <=> $1))::FLOAT AS similaridade
-       FROM "Documentos"
-       ORDER BY embedding <=> $1   -- operador cosine distance do pgvector
-       LIMIT $2`,
-      [pgvector.toSql(embedding), k]
-    );
-    return rows;
+    const { rows } = await client.query<BuscaSimilarQueryRow>(sql, valoresSql);
+
+    return rows.map((row): DocumentoSimilar => ({
+      id: row.id,
+      conteudo: row.conteudo,
+      metadata: row.metadata,
+      chamado_id: row.chamado_id,
+      artigo_id: row.artigo_id,
+      similaridade: Number(row.similaridade),
+      chamado:
+        row.chamado_id !== null &&
+        row.chamado_titulo !== null &&
+        row.chamado_descricao !== null &&
+        row.chamado_status !== null &&
+        row.chamado_prioridade !== null &&
+        row.chamado_categoria_id !== null
+          ? {
+              id: row.chamado_id,
+              titulo: row.chamado_titulo,
+              descricao: row.chamado_descricao,
+              status: row.chamado_status,
+              prioridade: row.chamado_prioridade,
+              solucao: row.chamado_solucao,
+              resolvidoEm: row.chamado_resolvido_em,
+              categoriaId: row.chamado_categoria_id,
+              categoriaNome: row.chamado_categoria_nome ?? '',
+            }
+          : null,
+      artigo:
+        row.artigo_id !== null &&
+        row.artigo_titulo !== null &&
+        row.artigo_conteudo !== null &&
+        row.artigo_categoria_id !== null
+          ? {
+              id: row.artigo_id,
+              titulo: row.artigo_titulo,
+              conteudo: row.artigo_conteudo,
+              categoriaId: row.artigo_categoria_id,
+              categoriaNome: row.artigo_categoria_nome ?? '',
+            }
+          : null,
+    }));
   } finally {
     client.release();
   }
