@@ -11,7 +11,7 @@ export const pool = new Pool({
  */
 export async function clienteComVetor(): Promise<PoolClient> {
   const client = await pool.connect();
-  await pgvector.registerType(client);
+  await pgvector.registerTypes(client);
   return client;
 }
 
