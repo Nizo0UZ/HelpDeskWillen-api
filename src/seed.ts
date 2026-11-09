@@ -791,6 +791,25 @@ export async function executarSeed(opcoes?: {
     prisma.$executeRawUnsafe('ALTER SEQUENCE "Tag_id_seq" RESTART WITH 1'),
     prisma.$executeRawUnsafe('ALTER SEQUENCE "Usuario_id_seq" RESTART WITH 1'),
     prisma.$executeRawUnsafe('ALTER SEQUENCE "Categoria_id_seq" RESTART WITH 1'),
+    prisma.$executeRawUnsafe(
+      'CREATE INDEX IF NOT EXISTS "Chamado_status_categoria_id_idx" ON "Chamado"("status", "categoria_id")'
+    ),
+    prisma.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS "chamado_fts_gin_idx"
+        ON "Chamado"
+        USING gin (
+          to_tsvector(
+            'portuguese',
+            coalesce("titulo", '') || ' ' || coalesce("descricao", '') || ' ' || coalesce("solucao", '')
+          )
+        )
+    `),
+    prisma.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS documentos_embedding_hnsw_idx
+        ON "Documentos"
+        USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64)
+    `),
   ]);
 
   // -------------------------------------------------------------------------

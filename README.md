@@ -12,7 +12,7 @@ Para atingir esse objetivo, o projeto integra três paradigmas de banco de dados
 ## Sumário
 
 1. [Trilhas Escolhidas e Arquitetura](#1-trilhas-escolhidas-e-arquitetura)
-2. [Pré-requisitos e Passo a Passo de Execução](#2-pré-requisitos-e-passo-a-passo-de-execução)
+2. [Manual de Execução (Pré-requisitos e Passo a Passo)](#2-manual-de-execução-pré-requisitos-e-passo-a-passo)
 3. [Modelagem de Dados e Diagrama ER (Mermaid)](#3-modelagem-de-dados-e-diagrama-er-mermaid)
 4. [Lista de Rotas da API REST com Exemplos](#4-lista-de-rotas-da-api-rest-com-exemplos)
 5. [Desempenho nas Consultas (`EXPLAIN ANALYZE` e Benchmark em 5.000+ Registros)](#5-desempenho-nas-consultas-explain-analyze-e-benchmark-em-5000-registros)
@@ -44,7 +44,7 @@ O projeto implementa as **3 trilhas** propostas:
 
 ---
 
-## 2. Pré-requisitos e Passo a Passo de Execução
+## 2. Manual de Execução (Pré-requisitos e Passo a Passo)
 
 ### Pré-requisitos
 
@@ -52,22 +52,39 @@ O projeto implementa as **3 trilhas** propostas:
 - **Node.js 22–24 LTS** (configurado em `.nvmrc` e `engines` no `package.json`)
 - **Chave de API do Google Gemini** (`GEMINI_API_KEY`, gratuita via [Google AI Studio](https://aistudio.google.com/apikey))
 
-### Passo a passo de instalação e execução
+### Sequência Rápida de Execução (Passo a Passo)
 
-> Caso você tenha clonado o repositório a partir da pasta pai (`ProjetoWillen`), acesse primeiro o diretório `cd backend`. Se clonou diretamente o repositório `HelpDeskWillen-api`, você já está na raiz do projeto.
+Execute os comandos abaixo na raiz do repositório para subir os containers, aplicar as migrations do banco, popular os **5.000+ registros** (incluindo embeddings no `pgvector` e indexação no `Elasticsearch`) e iniciar a API:
 
 ```bash
-cp .env.example .env        # (preencher GEMINI_API_KEY no arquivo .env)
-docker-compose up -d
-npm install
-npx prisma migrate dev
-node src/seed.js
-npm run dev
+cp .env.example .env        # 1. Cria o .env (preencha sua GEMINI_API_KEY no arquivo .env)
+docker-compose up -d        # 2. Sobe PostgreSQL 16 (pgvector), Elasticsearch 9.5 e pgAdmin
+npm install                 # 3. Instala as dependências e gera o Prisma Client
+npx prisma migrate dev      # 4. Cria a estrutura de tabelas, FKs e índices no PostgreSQL
+node src/seed.js            # 5. Popula 5.000 chamados, 50 usuários, 20 artigos, embeddings e Elasticsearch
+npm run dev                 # 6. Inicia o servidor HTTP Express em http://localhost:3000
 ```
 
-> [!NOTE]
-> **Observação sobre `npx prisma migrate dev` e o índice HNSW do `pgvector`:**
-> Em um banco recém-criado (`docker-compose up -d`), `npx prisma migrate dev` aplica todas as 5 migrations existentes (incluindo os índices `HNSW` e `GIN`) e gera o Prisma Client. Como a gramática do `schema.prisma` no Prisma 7 não possui sintaxe nativa para índices `USING hnsw` em colunas `Unsupported("vector(1536)")` nem índices funcionais `GIN` (`to_tsvector`), se o CLI perguntar um nome para criar uma migration adicional após aplicar as 5 migrations, basta pressionar `Ctrl+C` (ou utilizar `npx prisma migrate deploy`), preservando os índices `documentos_embedding_hnsw_idx` e `chamado_fts_gin_idx` (detalhes em [IA_LOG.md](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/IA_LOG.md)).
+#### Detalhamento de cada etapa do Manual de Execução
+
+1. **`cp .env.example .env`** *(no Windows PowerShell: `Copy-Item .env.example .env`)*:
+   - Copia o arquivo de configuração padrão [`.env.example`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/.env.example) (já configurado com `DATABASE_URL="postgresql://willen:willen@localhost:5432/willen?schema=public"`, `ELASTICSEARCH_URL="http://localhost:9200"` e `PORT=3000`).
+   - Abra o arquivo `.env` gerado e substitua `PREENCHA_SUA_GEMINI_API_KEY_AQUI` pela sua chave da API do Google Gemini.
+2. **`docker-compose up -d`**:
+   - Inicializa em segundo plano os containers `willen_postgres` (porta `5432`), `willen_elasticsearch` (porta `9200`) e `willen_pgadmin` (porta `5050`). Aguarde ~15–30 segundos na primeira execução para que o PostgreSQL e o Elasticsearch fiquem saudáveis (`healthy`).
+3. **`npm install`**:
+   - Instala os pacotes do projeto e executa automaticamente `prisma generate` (via script `postinstall`), gerando o cliente tipado do Prisma 7 em `generated/prisma`.
+4. **`npx prisma migrate dev`** *(ou `npx prisma migrate deploy`)*:
+   - Aplica todas as migrations versionadas em `prisma/migrations/`, criando as 8 tabelas (`Usuario`, `Categoria`, `Chamado`, `Comentario`, `Tag`, `ChamadoTag`, `Artigo`, `Documentos`), a extensão `vector` e os índices (`B-tree`, `GIN` e `HNSW`).
+5. **`node src/seed.js`** *(ou `npm run seed`)*:
+   - Executa o seeder idempotente ([`src/seed.js`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/seed.js) → [`src/seed.ts`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/src/seed.ts)):
+     - Limpa dados anteriores e reinicia os IDs em `1`;
+     - Garante a presença ativa dos índices especiais (`documentos_embedding_hnsw_idx`, `chamado_fts_gin_idx` e `Chamado_status_categoria_id_idx`);
+     - Cria **10 categorias**, **20 tags**, **50 usuários** (com senhas em hash `bcrypt`), **20 artigos** da base de conhecimento e **5.000 chamados** (sendo **40 chamados realistas de TI** resolvidos escritos à mão + **4.960 sintéticos** via `@faker-js/faker` `pt_BR`);
+     - Gera os embeddings vetoriais de **1.536 dimensões** (`gemini-embedding-001`) na tabela `Documentos`;
+     - Sincroniza em lote (`Bulk API`) os **5.000 chamados** com o índice `chamados` do Elasticsearch.
+6. **`npm run dev`**:
+   - Inicia a API REST na porta `3000`. As rotas podem ser testadas imediatamente usando o arquivo [`requests.http`](file:///c:/Users/lucas/OneDrive/Documentos/Faculdade/ProjetoWillen/backend/requests.http).
 
 ### Scripts adicionais disponíveis no `package.json`
 
