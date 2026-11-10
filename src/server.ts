@@ -13,6 +13,17 @@ import { usuariosRouter } from './routes/usuarios';
 export function criarApp(): Express {
   const app = express();
 
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+
   app.use(express.json());
 
   app.use('/categorias', categoriasRouter);
@@ -39,7 +50,7 @@ export async function encerrarConexoes(): Promise<void> {
 
 if (require.main === module) {
   const server = app.listen(env.PORT, () => {
-    console.log(`🚀 Servidor Express iniciado na porta ${env.PORT}`);
+    console.log(`Servidor Express iniciado na porta ${env.PORT}`);
   });
 
   const finalizar = async (): Promise<void> => {

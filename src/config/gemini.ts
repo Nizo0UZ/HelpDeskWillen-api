@@ -12,13 +12,13 @@ export const EMBEDDING_DIMENSOES = 1536 as const;
 
 // Modelo generativo principal e fallbacks para a etapa "G" (Generation) do RAG
 export const GENERATION_MODEL =
-  process.env.GEMINI_MODEL || ('gemini-3.8-flash' as const);
+  process.env.GEMINI_MODEL || ('gemini-3.5-flash' as const);
 
 export const GENERATION_MODELS_FALLBACK: readonly string[] = [
   GENERATION_MODEL,
-  'gemini-3.7-flash',
-  'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
+  'gemini-3.7-flash',
+  'gemini-3.8-flash',
 ];
 
 // Limiar mínimo de similaridade de cosseno (0 a 1) para descartar resultados irrelevantes
